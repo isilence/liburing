@@ -9,7 +9,7 @@
 #include "liburing/io_uring.h"
 #include "liburing/sanitize.h"
 
-static inline int do_register(struct io_uring *ring, unsigned int opcode,
+int do_register(struct io_uring *ring, unsigned int opcode,
 			      const void *arg, unsigned int nr_args)
 {
 	int fd;

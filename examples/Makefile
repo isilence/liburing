@@ -33,7 +33,8 @@ example_srcs := \
 	rsrc-update-bench.c \
 	proxy.c \
 	zcrx.c \
-	kdigest.c
+	kdigest.c \
+	dmabuf-read.c
 
 all_targets :=
 
