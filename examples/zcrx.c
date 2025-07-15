@@ -305,6 +305,11 @@ static void return_buffer(struct io_uring_zcrx_rq *rq_ring,
 	struct io_uring_zcrx_rqe *rqe;
 	unsigned rq_mask = rq_ring->ring_entries - 1;
 
+	if (*rq_ring->ktail - rq_ring->rq_tail == rq_ring->ring_entries) {
+		printf("refill queue is full, drop the buffer\n");
+		return;
+	}
+
 	/* processed, return back to the kernel */
 	rqe = &rq_ring->rqes[rq_ring->rq_tail & rq_mask];
 	rqe->off = (rcqe->off & ~IORING_ZCRX_AREA_MASK) | area_token;
