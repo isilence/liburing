@@ -298,10 +298,18 @@ static void verify_data(char *data, size_t size, unsigned long seq)
 	}
 }
 
+static inline void fill_rqe(const struct io_uring_cqe *cqe,
+			    struct io_uring_zcrx_rqe *rqe)
+{
+	const struct io_uring_zcrx_cqe *rcqe = (void *)(cqe + 1);
+
+	rqe->off = (rcqe->off & ~IORING_ZCRX_AREA_MASK) | area_token;
+	rqe->len = cqe->res;
+}
+
 static void return_buffer(struct io_uring_zcrx_rq *rq_ring,
 			  const struct io_uring_cqe *cqe)
 {
-	const struct io_uring_zcrx_cqe *rcqe = (void *)(cqe + 1);
 	struct io_uring_zcrx_rqe *rqe;
 	unsigned rq_mask = rq_ring->ring_entries - 1;
 
@@ -312,8 +320,7 @@ static void return_buffer(struct io_uring_zcrx_rq *rq_ring,
 
 	/* processed, return back to the kernel */
 	rqe = &rq_ring->rqes[rq_ring->rq_tail & rq_mask];
-	rqe->off = (rcqe->off & ~IORING_ZCRX_AREA_MASK) | area_token;
-	rqe->len = cqe->res;
+	fill_rqe(cqe, rqe);
 	io_uring_smp_store_release(rq_ring->ktail, ++rq_ring->rq_tail);
 }
 
