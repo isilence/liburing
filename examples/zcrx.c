@@ -69,6 +69,7 @@ enum {
 	REQ_TYPE_RX		= 2,
 };
 
+static int sync_refill;
 static int cfg_port = 8000;
 static const char *cfg_ifname;
 static int cfg_queue_id = -1;
@@ -298,6 +299,11 @@ static void verify_data(char *data, size_t size, unsigned long seq)
 	}
 }
 
+static inline bool need_sync_refill(void)
+{
+	return sync_refill;
+}
+
 static inline void fill_rqe(const struct io_uring_cqe *cqe,
 			    struct io_uring_zcrx_rqe *rqe)
 {
@@ -331,7 +337,8 @@ static void return_buffer(struct io_uring *ring,
 	struct io_uring_zcrx_rqe *rqe;
 	unsigned rq_mask = rq_ring->ring_entries - 1;
 
-	if (*rq_ring->ktail - rq_ring->rq_tail == rq_ring->ring_entries) {
+	if (*rq_ring->ktail - rq_ring->rq_tail == rq_ring->ring_entries ||
+	    need_sync_refill()) {
 		return_buffer_sync(ring, cqe);
 		return;
 	}
