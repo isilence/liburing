@@ -307,14 +307,32 @@ static inline void fill_rqe(const struct io_uring_cqe *cqe,
 	rqe->len = cqe->res;
 }
 
-static void return_buffer(struct io_uring_zcrx_rq *rq_ring,
+static void return_buffer_sync(struct io_uring *ring,
+				const struct io_uring_cqe *cqe)
+{
+	struct io_uring_zcrx_rqe rqe;
+	struct io_uring_zcrx_refill zr = {
+		.zcrx_id = 0,
+		.nr_entries = 1,
+		.rqes = uring_ptr_to_u64(&rqe),
+	};
+	int ret;
+
+	fill_rqe(cqe, &rqe);
+	ret = do_register(ring, IORING_REGISTER_ZCRX_REFILL, &zr, 0);
+	if (ret < 0)
+		t_error(1, ret, "sync refill failed %i\n", ret);
+}
+
+static void return_buffer(struct io_uring *ring,
+			  struct io_uring_zcrx_rq *rq_ring,
 			  const struct io_uring_cqe *cqe)
 {
 	struct io_uring_zcrx_rqe *rqe;
 	unsigned rq_mask = rq_ring->ring_entries - 1;
 
 	if (*rq_ring->ktail - rq_ring->rq_tail == rq_ring->ring_entries) {
-		printf("refill queue is full, drop the buffer\n");
+		return_buffer_sync(ring, cqe);
 		return;
 	}
 
@@ -349,7 +367,7 @@ static void process_recvzc(struct io_uring __attribute__((unused)) *ring,
 
 	verify_data(data, cqe->res, received);
 	received += cqe->res;
-	return_buffer(&rq_ring, cqe);
+	return_buffer(ring, &rq_ring, cqe);
 }
 
 static void server_loop(struct io_uring *ring)
