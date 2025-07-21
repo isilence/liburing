@@ -635,6 +635,9 @@ enum io_uring_register_op {
 
 	IORING_REGISTER_MEM_REGION		= 34,
 
+	/* return zcrx buffers back into circulation */
+	IORING_REGISTER_ZCRX_REFILL		= 35,
+
 	/* this goes last */
 	IORING_REGISTER_LAST,
 
@@ -986,6 +989,13 @@ struct io_uring_zcrx_ifq_reg {
 	__u32	zcrx_id;
 	__u32	__resv2;
 	__u64	__resv[3];
+};
+
+struct io_uring_zcrx_refill {
+	__u32		zcrx_id;
+	__u32		nr_entries;
+	__u64		rqes;
+	__u64		__resv[2];
 };
 
 #ifdef __cplusplus
