@@ -75,6 +75,7 @@ static size_t cfg_size = 0;
 static unsigned cfg_rq_alloc_mode = RQ_ALLOC_USER;
 static unsigned cfg_area_type = AREA_TYPE_NORMAL;
 static struct sockaddr_in6 cfg_addr;
+static int cfg_rx_buf_len;
 
 static long page_size;
 
@@ -206,6 +207,7 @@ static void setup_zcrx(struct io_uring *ring)
 		.rq_entries = rq_entries,
 		.area_ptr = uring_ptr_to_u64(&area_reg),
 		.region_ptr = uring_ptr_to_u64(&region_reg),
+		.rx_buf_len = cfg_rx_buf_len,
 	};
 
 	ret = io_uring_register_ifq(ring, &reg);
@@ -431,7 +433,7 @@ static void parse_opts(int argc, char **argv)
 	if (argc <= 1)
 		usage(argv[0]);
 
-	while ((c = getopt(argc, argv, "vp:i:q:s:r:A:S:")) != -1) {
+	while ((c = getopt(argc, argv, "vp:i:q:s:r:A:S:B:")) != -1) {
 		switch (c) {
 		case 'p':
 			cfg_port = strtoul(optarg, NULL, 0);
@@ -460,6 +462,9 @@ static void parse_opts(int argc, char **argv)
 			cfg_area_type = strtoul(optarg, NULL, 0);
 			if (cfg_area_type >= __AREA_TYPE_MAX)
 				t_error(1, 0, "Invalid area type");
+			break;
+		case 'B':
+			cfg_rx_buf_len = strtoul(optarg, NULL, 0);
 			break;
 		}
 	}
