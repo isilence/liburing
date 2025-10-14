@@ -211,6 +211,12 @@ enum io_uring_sqe_flags_bit {
  */
 #define IORING_SETUP_CQE_MIXED		(1U << 18)
 
+/*
+ * SQEs always start at index 0 in the submission ring instead of using a
+ * wrap around indexing.
+ */
+#define IORING_SETUP_SQ_REWIND		(1U << 19)
+
 enum io_uring_op {
 	IORING_OP_NOP,
 	IORING_OP_READV,
