@@ -359,6 +359,8 @@ int io_uring_register_clock(struct io_uring *ring,
 int io_uring_get_events(struct io_uring *ring) LIBURING_NOEXCEPT;
 int io_uring_submit_and_get_events(struct io_uring *ring) LIBURING_NOEXCEPT;
 
+int io_uring_query(struct io_uring *ring, struct io_uring_query_hdr *arg);
+
 /*
  * io_uring syscalls.
  */

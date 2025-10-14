@@ -27,13 +27,6 @@ struct io_uring_query_opcode_large {
 
 static struct io_uring_query_opcode sys_ops;
 
-static int io_uring_query(struct io_uring *ring, struct io_uring_query_hdr *arg)
-{
-	int fd = ring ? ring->ring_fd : -1;
-
-	return io_uring_register(fd, IORING_REGISTER_QUERY, arg, 0);
-}
-
 static int test_basic_query(void)
 {
 	struct io_uring_query_opcode op = {};

@@ -513,3 +513,10 @@ int io_uring_set_iowait(struct io_uring *ring, bool enable_iowait)
 		ring->int_flags |= INT_FLAG_NO_IOWAIT;
 	return 0;
 }
+
+int io_uring_query(struct io_uring *ring, struct io_uring_query_hdr *arg)
+{
+	int fd = ring ? ring->ring_fd : -1;
+
+	return io_uring_register(fd, IORING_REGISTER_QUERY, arg, 0);
+}
