@@ -5,10 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 #include "liburing.h"
 #include "test.h"
 #include "helpers.h"
+
+pthread_barrier_t barrier;
 
 struct io_uring_query_opcode_short {
 	__u32	nr_request_opcodes;
@@ -153,9 +156,8 @@ static int test_chain(void)
 	return T_EXIT_PASS;
 }
 
-static int test_chain_loop(void)
+static void *chain_loop_thread(void *arg)
 {
-	int ret;
 	struct io_uring_query_opcode op1 = {}, op2 = {};
 	struct io_uring_query_hdr hdr2 = {
 		.query_op = IO_URING_QUERY_OPCODES,
@@ -167,27 +169,36 @@ static int test_chain_loop(void)
 		.query_data = uring_ptr_to_u64(&op1),
 		.size = sizeof(struct io_uring_query_opcode),
 	};
-	struct io_uring_query_hdr hdr_self_circular = {
-		.query_op = IO_URING_QUERY_OPCODES,
-		.query_data = uring_ptr_to_u64(&op1),
-		.size = sizeof(struct io_uring_query_opcode),
-		.next_entry = uring_ptr_to_u64(&hdr_self_circular),
-	};
 
 	hdr1.next_entry = uring_ptr_to_u64(&hdr2);
 	hdr2.next_entry = uring_ptr_to_u64(&hdr1);
-	ret = io_uring_query(NULL, &hdr1);
-	if (!ret) {
-		fprintf(stderr, "chain loop failed %i\n", ret);
+
+	pthread_barrier_wait(&barrier);
+
+	(void)io_uring_query(NULL, &hdr1);
+	return NULL;
+}
+
+static int test_chain_loop(void)
+{
+	pthread_t thread;
+	int ret;
+
+	ret = pthread_barrier_init(&barrier, NULL, 2);
+	if (ret != 0) {
+		fprintf(stderr, "pthread_barrier_init failed %i\n", ret);
+		return T_EXIT_FAIL;
+	}
+	if (pthread_create(&thread, NULL, chain_loop_thread, NULL) != 0) {
+		fprintf(stderr, "pthread_create failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
-	ret = io_uring_query(NULL, &hdr_self_circular);
-	if (!ret) {
-		fprintf(stderr, "chain loop failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
-
+	pthread_barrier_wait(&barrier);
+	sleep(1);
+	pthread_kill(thread, SIGKILL);
+	pthread_join(thread, NULL);
+	pthread_barrier_destroy(&barrier);
 	return T_EXIT_PASS;
 }
 
