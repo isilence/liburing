@@ -208,9 +208,44 @@ static void setup_zcrx(struct io_uring *ring)
 		.region_ptr = uring_ptr_to_u64(&region_reg),
 	};
 
-	ret = io_uring_register_ifq(ring, &reg);
-	if (ret)
-		t_error(1, 0, "io_uring_register_ifq(): %d", ret);
+	{
+		int zcrx_fd;
+		struct io_uring tmp_ring;
+		ret = io_uring_queue_init(8, &tmp_ring, IORING_SETUP_CQE32 |
+						      IORING_SETUP_DEFER_TASKRUN |
+						      IORING_SETUP_SINGLE_ISSUER);
+		if (ret)
+			t_error(1, ret, "ring init failed");
+
+		ret = io_uring_register_ifq(&tmp_ring, &reg);
+		if (ret)
+			t_error(1, 0, "io_uring_register_ifq(): %d", ret);
+
+		struct zcrx_ctrl ctrl = {
+			.zcrx_id = reg.zcrx_id,
+			.op = ZCRX_CTRL_EXPORT,
+		};
+		zcrx_fd = io_uring_register(tmp_ring.ring_fd,
+					IORING_REGISTER_ZCRX_CTRL,
+					&ctrl, 0);
+		printf("export %i\n", zcrx_fd);
+		if (zcrx_fd < 0)
+			t_error(1, zcrx_fd, "export failed\n");
+
+		ctrl.op = ZCRX_CTRL_IMPORT;
+		ctrl.resv[0] = zcrx_fd;
+		ret = io_uring_register(ring->ring_fd, IORING_REGISTER_ZCRX_CTRL,
+					&ctrl, 0);
+		printf("import %i\n", ret);
+		if (ret < 0)
+			t_error(1, ret, "import failed\n");
+
+		io_uring_queue_exit(&tmp_ring);
+		close(zcrx_fd);
+
+		reg.zcrx_id = ret;
+	}
+
 
 	if (cfg_rq_alloc_mode == RQ_ALLOC_KERNEL) {
 		ring_ptr = mmap(NULL, ring_size,
