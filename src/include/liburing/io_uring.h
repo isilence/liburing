@@ -571,9 +571,28 @@ struct io_uring_params {
 	__u32 sq_thread_idle;
 	__u32 features;
 	__u32 wq_fd;
-	__u32 resv[3];
+	__u32 resv;
+	__u64 params_ext; /* pointer to struct io_uring_params_ext */
 	struct io_sqring_offsets sq_off;
 	struct io_cqring_offsets cq_off;
+};
+
+enum io_uring_scq_placement_flags {
+	IORING_PLACEMENT_SCQ_HDR		= (1U << 0),
+	IORING_PLACEMENT_SQ			= (1U << 1),
+	IORING_PLACEMENT_CQ			= (1U << 2),
+};
+
+struct io_uring_scq_placement {
+	__u64 flags;
+	__u64 scq_hdr_off;
+	__u64 sq_off;
+	__u64 cq_off;
+};
+
+struct io_uring_params_ext {
+	__u64 mem_region; /* pointer to struct io_uring_mem_region_reg */
+	struct io_uring_scq_placement placement;
 };
 
 /*

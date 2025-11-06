@@ -62,7 +62,7 @@ int main(int argc, char **argv)
 
 	/* resv array is non-zero */
 	memset(&p, 0, sizeof(p));
-	p.resv[0] = p.resv[1] = p.resv[2] = 1;
+	p.resv = 1;
 	status |= try_io_uring_setup(1, &p, -EINVAL);
 
 	/* invalid flags */
