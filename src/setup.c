@@ -24,6 +24,12 @@ static unsigned roundup_pow2(unsigned depth)
 	return 1U << __fls(depth - 1);
 }
 
+static void *mmap_region(int ring_fd, size_t size, off_t offset)
+{
+	return __sys_mmap(0, size, PROT_READ | PROT_WRITE,
+			  MAP_SHARED | MAP_POPULATE, ring_fd, offset);
+}
+
 static int get_sq_cq_entries(unsigned entries, struct io_uring_params *p,
 			     unsigned *sq, unsigned *cq)
 {
@@ -120,18 +126,15 @@ int io_uring_mmap(int fd, struct io_uring_params *p, struct io_uring_sq *sq,
 			sq->ring_sz = cq->ring_sz;
 		cq->ring_sz = sq->ring_sz;
 	}
-	sq->ring_ptr = __sys_mmap(0, sq->ring_sz, PROT_READ | PROT_WRITE,
-				  MAP_SHARED | MAP_POPULATE, fd,
-				  IORING_OFF_SQ_RING);
+
+	sq->ring_ptr = mmap_region(fd, sq->ring_sz, IORING_OFF_SQ_RING);
 	if (IS_ERR(sq->ring_ptr))
 		return PTR_ERR(sq->ring_ptr);
 
 	if (p->features & IORING_FEAT_SINGLE_MMAP) {
 		cq->ring_ptr = sq->ring_ptr;
 	} else {
-		cq->ring_ptr = __sys_mmap(0, cq->ring_sz, PROT_READ | PROT_WRITE,
-					  MAP_SHARED | MAP_POPULATE, fd,
-					  IORING_OFF_CQ_RING);
+		cq->ring_ptr = mmap_region(fd, cq->ring_sz, IORING_OFF_CQ_RING);
 		if (IS_ERR(cq->ring_ptr)) {
 			ret = PTR_ERR(cq->ring_ptr);
 			cq->ring_ptr = NULL;
@@ -139,9 +142,8 @@ int io_uring_mmap(int fd, struct io_uring_params *p, struct io_uring_sq *sq,
 		}
 	}
 
-	sq->sqes = __sys_mmap(0, params_sqes_size(p, p->sq_entries),
-			      PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE,
-			      fd, IORING_OFF_SQES);
+	sq->sqes = mmap_region(fd, params_sqes_size(p, p->sq_entries),
+				IORING_OFF_SQES);
 	if (IS_ERR(sq->sqes)) {
 		ret = PTR_ERR(sq->sqes);
 err:
