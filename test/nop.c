@@ -12,6 +12,7 @@
 
 #include "liburing.h"
 #include "test.h"
+#include "helpers.h"
 
 static int seq;
 
@@ -167,7 +168,44 @@ static int test_ring(unsigned flags)
 	struct io_uring_params p = { };
 	int ret, i;
 
-	p.flags = flags;
+	unsigned sq_entries = 8;
+	unsigned cq_entries = 32;
+
+	size_t hdr_offset = 512;
+	size_t cq_size = cq_entries * sizeof(struct io_uring_cqe);
+	if (flags & IORING_SETUP_CQE32)
+		cq_size *= 2;
+	size_t sq_offset = hdr_offset + cq_size;
+	size_t sq_size = sq_entries * sizeof(struct io_uring_sqe);
+
+	size_t size = sq_offset + sq_size;
+	void *buffer = t_aligned_alloc(4096, size);
+	if (!buffer) {
+		fprintf(stderr, "buffer alloc failed\n");
+		exit(1);
+	}
+
+	struct io_uring_region_desc rd = {};
+	struct io_uring_mem_region_reg mr = {};
+	rd.user_addr = uring_ptr_to_u64(buffer);
+	rd.size = size;
+	rd.flags = IORING_MEM_REGION_TYPE_USER;
+	mr.region_uptr = uring_ptr_to_u64(&rd);
+	mr.flags = IORING_MEM_REGION_REG_WAIT_ARG;
+
+	struct io_uring_params_ext e = {};
+	e.mem_region = uring_ptr_to_u64(&mr);
+	e.placement.flags = IORING_PLACEMENT_SCQ_HDR |
+				IORING_PLACEMENT_SQ |
+				IORING_PLACEMENT_CQ;
+	e.placement.scq_hdr_off = 0;
+	e.placement.cq_off = hdr_offset;
+	e.placement.sq_off = sq_offset;
+
+	p.flags = flags | IORING_SETUP_CQSIZE;
+	p.cq_entries = cq_entries;
+	p.params_ext = uring_ptr_to_u64(&e);
+
 	ret = io_uring_queue_init_params(8, &ring, &p);
 	if (ret) {
 		if (ret == -EINVAL)
