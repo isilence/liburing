@@ -168,6 +168,59 @@ __cold int io_uring_queue_mmap(int fd, struct io_uring_params *p,
 	return io_uring_mmap(fd, p, &ring->sq, &ring->cq);
 }
 
+static int setup_placement_rings(int fd, struct io_uring_params *p,
+				struct io_uring_params_ext *e,
+				struct io_uring *ring)
+{
+	struct io_uring_scq_placement *pl = &e->placement;
+	struct io_uring_mem_region_reg *mr_reg;
+	struct io_uring_region_desc *rd;
+	struct io_uring_sq *sq = &ring->sq;
+	struct io_uring_cq *cq = &ring->cq;
+	void *hdr_ptr;
+	void *base;
+
+	mr_reg = (void *)(unsigned long)e->mem_region;
+	if (!mr_reg)
+		return -EINVAL;
+	rd = (void *)(unsigned long)mr_reg->region_uptr;
+	if (!rd)
+		return -EINVAL;
+
+	if (pl->flags != (IORING_PLACEMENT_SCQ_HDR |
+			  IORING_PLACEMENT_CQ |
+			  IORING_PLACEMENT_SQ))
+		return -EINVAL;
+
+	base = (void *)(unsigned long)rd->user_addr;
+	hdr_ptr = base + pl->scq_hdr_off;
+
+	sq->khead = hdr_ptr + p->sq_off.head;
+	sq->ktail = hdr_ptr + p->sq_off.tail;
+	sq->kring_mask = hdr_ptr + p->sq_off.ring_mask;
+	sq->kring_entries = hdr_ptr + p->sq_off.ring_entries;
+	sq->kflags = hdr_ptr + p->sq_off.flags;
+	sq->kdropped = hdr_ptr + p->sq_off.dropped;
+
+	cq->khead = hdr_ptr + p->cq_off.head;
+	cq->ktail = hdr_ptr + p->cq_off.tail;
+	cq->kring_mask = hdr_ptr + p->cq_off.ring_mask;
+	cq->kring_entries = hdr_ptr + p->cq_off.ring_entries;
+	cq->koverflow = hdr_ptr + p->cq_off.overflow;
+	if (p->cq_off.flags)
+		cq->kflags = hdr_ptr + p->cq_off.flags;
+
+	cq->cqes = base + pl->cq_off;
+	sq->sqes = base + pl->sq_off;
+
+	sq->ring_mask = *sq->kring_mask;
+	sq->ring_entries = *sq->kring_entries;
+	cq->ring_mask = *cq->kring_mask;
+	cq->ring_entries = *cq->kring_entries;
+	return 0;
+}
+
+
 static size_t io_uring_sqes_size(const struct io_uring *ring)
 {
 	return (ring->sq.ring_entries << io_uring_sqe_shift(ring)) *
@@ -308,6 +361,7 @@ int __io_uring_queue_init_params(unsigned entries, struct io_uring *ring,
 	int fd, ret = 0;
 	unsigned *sq_array;
 	unsigned sq_entries, index;
+	struct io_uring_params_ext *e;
 
 	memset(ring, 0, sizeof(*ring));
 
@@ -338,7 +392,14 @@ int __io_uring_queue_init_params(unsigned entries, struct io_uring *ring,
 		return fd;
 	}
 
-	if (!(p->flags & IORING_SETUP_NO_MMAP)) {
+	e = (void *)(unsigned long)p->params_ext;
+	if (e && e->placement.flags) {
+		ret = setup_placement_rings(fd, p, e, ring);
+		if (ret) {
+			__sys_close(fd);
+			return ret;
+		}
+	} else if (!(p->flags & IORING_SETUP_NO_MMAP)) {
 		ret = io_uring_queue_mmap(fd, p, ring);
 		if (ret) {
 			__sys_close(fd);
