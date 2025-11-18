@@ -80,6 +80,8 @@ struct zc_conn {
 	unsigned stat_nr_cqes;
 };
 
+static bool supports_rq_flush;
+
 static unsigned cfg_rq_entries = 8192;
 static unsigned cfg_cq_entries = 8192;
 static long cfg_area_size = 256 * 1024 * 1024;
@@ -398,6 +400,32 @@ static inline void fill_rqe(const struct io_uring_cqe *cqe,
 	rqe->len = cqe->res;
 }
 
+static bool flush_refill_queue(struct io_uring *ring,
+			       struct io_uring_zcrx_rq *rq_ring)
+{
+	struct zcrx_ctrl ctrl = {
+		.zcrx_id = zcrx_id,
+		.op = ZCRX_CTRL_FLUSH_RQ,
+	};
+	int ret;
+
+	if (!supports_rq_flush)
+		return false;
+
+	ret = io_uring_register(ring->ring_fd, IORING_REGISTER_ZCRX_CTRL,
+				&ctrl, 0);
+	if (ret < 0) {
+		fprintf(stderr, "Refill ring flush failed %i\n", ret);
+		supports_rq_flush = false;
+		return false;
+	}
+
+	/* should never happen */
+	if (rq_nr_queued(rq_ring) == rq_ring->ring_entries)
+		t_error(1, 0, "Couldn't flush refill ring\n");
+	return true;
+}
+
 static void return_buffer(struct io_uring *ring,
 			  struct io_uring_zcrx_rq *rq_ring,
 			  const struct io_uring_cqe *cqe)
@@ -405,19 +433,10 @@ static void return_buffer(struct io_uring *ring,
 	struct io_uring_zcrx_rqe *rqe;
 	unsigned rq_mask;
 
-	if (rq_nr_queued(rq_ring) == rq_ring->ring_entries) {
-		struct zcrx_ctrl ctrl = {
-			.zcrx_id = zcrx_id,
-			.op = ZCRX_CTRL_FLUSH_RQ,
-		};
-		int ret;
-
-		ret = io_uring_register(ring->ring_fd, IORING_REGISTER_ZCRX_CTRL,
-					&ctrl, 0);
-		if (rq_nr_queued(rq_ring) == rq_ring->ring_entries) {
-			printf("RQ is full, drop the buffer (%i)\n", ret);
-			return;
-		}
+	if (rq_nr_queued(rq_ring) == rq_ring->ring_entries &&
+	    !flush_refill_queue(ring, rq_ring)) {
+		printf("RQ is full, drop the buffer\n");
+		return;
 	}
 
 	rq_mask = rq_ring->ring_entries - 1;
@@ -621,6 +640,22 @@ static void parse_opts(int argc, char **argv)
 	addr6->sin6_addr = in6addr_any;
 }
 
+static void probe_zcrx(void)
+{
+	struct io_uring_query_zcrx qzc = {};
+	struct io_uring_query_hdr hdr = {
+		.size = sizeof(qzc),
+		.query_data = uring_ptr_to_u64(&qzc),
+		.query_op = IO_URING_QUERY_ZCRX,
+	};
+	int ret;
+
+	ret = io_uring_register(-1, IORING_REGISTER_QUERY, &hdr, 0);
+	if (ret < 0 || hdr.result < 0)
+		return;
+	supports_rq_flush = qzc.nr_ctrl_opcodes > ZCRX_CTRL_FLUSH_RQ;
+}
+
 int main(int argc, char **argv)
 {
 	page_size = sysconf(_SC_PAGESIZE);
@@ -629,6 +664,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	probe_zcrx();
 	parse_opts(argc, argv);
 	run_server();
 	return 0;
