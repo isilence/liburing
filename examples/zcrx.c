@@ -401,15 +401,26 @@ static inline void fill_rqe(const struct io_uring_cqe *cqe,
 	rqe->len = cqe->res;
 }
 
-static void return_buffer(struct io_uring_zcrx_rq *rq_ring,
+static void return_buffer(struct io_uring *ring,
+			  struct io_uring_zcrx_rq *rq_ring,
 			  const struct io_uring_cqe *cqe)
 {
 	struct io_uring_zcrx_rqe *rqe;
 	unsigned rq_mask;
 
 	if (rq_nr_queued(rq_ring) == rq_ring->ring_entries) {
-		printf("refill queue is full, drop the buffer\n");
-		return;
+		struct zcrx_ctrl ctrl = {
+			.zcrx_id = zcrx_id,
+			.op = ZCRX_CTRL_FLUSH_RQ,
+		};
+		int ret;
+
+		ret = io_uring_register(ring->ring_fd, IORING_REGISTER_ZCRX_CTRL,
+					&ctrl, 0);
+		if (rq_nr_queued(rq_ring) == rq_ring->ring_entries) {
+			printf("RQ is full, drop the buffer (%i)\n", ret);
+			return;
+		}
 	}
 
 	rq_mask = rq_ring->ring_entries - 1;
@@ -473,7 +484,7 @@ static void process_recvzc(struct io_uring *ring,
 
 	verify_data(data, cqe->res, conn->received);
 	conn->received += cqe->res;
-	return_buffer(&rq_ring, cqe);
+	return_buffer(ring, &rq_ring, cqe);
 }
 
 static void server_loop(struct io_uring *ring)
