@@ -45,14 +45,18 @@
 
 enum {
 	AFFINITY_MODE_NONE,
+	/* place softirq processing and userspace on the same CPU */
 	AFFINITY_MODE_SAME,
+	/* place softirq processing and userspace on different CPUs */
 	AFFINITY_MODE_DIFFERENT,
 
 	__AFFINITY_MODE_MAX,
 };
 
 enum {
+	/* User allocates the refill queue and hand memory to the kernel */
 	RQ_ALLOC_USER,
+	/* The kernel allocated the refill queue, then users should mmap it  */
 	RQ_ALLOC_KERNEL,
 
 	__RQ_ALLOC_MAX,
@@ -62,9 +66,12 @@ enum {
 #define REQ_TYPE_MASK	((1UL << REQ_TYPE_SHIFT) - 1)
 
 enum {
+	/* Default page sized private allocator */
 	AREA_TYPE_NORMAL,
+	/* Populate the zcrx area with huge pages */
 	AREA_TYPE_HUGE_PAGES,
-	AREA_TYPE_DMABUF,
+	/* DMABUF backed area. Uses udmabuf, which is backed by host memory */
+	AREA_TYPE_UDMABUF,
 	__AREA_TYPE_MAX,
 };
 
@@ -217,7 +224,7 @@ static void zcrx_populate_area(struct io_uring_zcrx_area_reg *area_reg)
 	unsigned flags = MAP_PRIVATE | MAP_ANONYMOUS;
 	unsigned prot = PROT_READ | PROT_WRITE;
 
-	if (cfg_area_type == AREA_TYPE_DMABUF) {
+	if (cfg_area_type == AREA_TYPE_UDMABUF) {
 		zcrx_populate_area_udmabuf(area_reg);
 		return;
 	}
