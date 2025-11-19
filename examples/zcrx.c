@@ -224,19 +224,17 @@ static void zcrx_populate_area(struct io_uring_zcrx_area_reg *area_reg)
 {
 	unsigned flags = MAP_PRIVATE | MAP_ANONYMOUS;
 	unsigned prot = PROT_READ | PROT_WRITE;
+	int mmap_fd = 0;
 
 	if (cfg_area_type == AREA_TYPE_UDMABUF) {
 		zcrx_populate_area_udmabuf(area_reg);
 		return;
 	}
-	if (cfg_area_type == AREA_TYPE_NORMAL) {
-		area_ptr = mmap(NULL, cfg_area_size, prot,
-				flags, 0, 0);
-	} else if (cfg_area_type == AREA_TYPE_HUGE_PAGES) {
-		area_ptr = mmap(NULL, cfg_area_size, prot,
-				flags | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
+	if (cfg_area_type == AREA_TYPE_HUGE_PAGES) {
+		flags |= MAP_HUGETLB | MAP_HUGE_2MB;
+		mmap_fd = -1;
 	}
-
+	area_ptr = mmap(NULL, cfg_area_size, prot, flags, mmap_fd, 0);
 	if (area_ptr == MAP_FAILED)
 		t_error(1, 0, "mmap(): area allocation failed");
 
