@@ -87,6 +87,7 @@ struct zc_conn {
 	unsigned stat_nr_cqes;
 };
 
+static struct io_uring_query_zcrx zcrx_query;
 static bool supports_rq_flush;
 
 static unsigned cfg_rq_entries = 8192;
@@ -172,7 +173,14 @@ static inline size_t get_refill_ring_size(unsigned int rq_entries)
 
 	ring_size = rq_entries * sizeof(struct io_uring_zcrx_rqe);
 	/* add space for the header (head/tail/etc.) */
-	ring_size += page_size;
+	if (zcrx_query.rq_hdr_size) {
+		ring_size += T_ALIGN_UP(zcrx_query.rq_hdr_size,
+					zcrx_query.rq_hdr_alignment);
+	} else {
+		/* query is not available, overestimate it */
+		ring_size += page_size;
+	}
+
 	return T_ALIGN_UP(ring_size, page_size);
 }
 
@@ -654,10 +662,9 @@ static void parse_opts(int argc, char **argv)
 
 static void probe_zcrx(void)
 {
-	struct io_uring_query_zcrx qzc = {};
 	struct io_uring_query_hdr hdr = {
-		.size = sizeof(qzc),
-		.query_data = uring_ptr_to_u64(&qzc),
+		.size = sizeof(zcrx_query),
+		.query_data = uring_ptr_to_u64(&zcrx_query),
 		.query_op = IO_URING_QUERY_ZCRX,
 	};
 	int ret;
@@ -665,7 +672,7 @@ static void probe_zcrx(void)
 	ret = io_uring_register(-1, IORING_REGISTER_QUERY, &hdr, 0);
 	if (ret < 0 || hdr.result < 0)
 		return;
-	supports_rq_flush = qzc.nr_ctrl_opcodes > ZCRX_CTRL_FLUSH_RQ;
+	supports_rq_flush = zcrx_query.nr_ctrl_opcodes > ZCRX_CTRL_FLUSH_RQ;
 }
 
 int main(int argc, char **argv)
