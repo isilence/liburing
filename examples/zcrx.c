@@ -391,6 +391,11 @@ static unsigned rq_nr_queued(struct io_uring_zcrx_rq *rq)
 	return rq->rq_tail - io_uring_smp_load_acquire(rq->khead);
 }
 
+static bool rq_is_full(struct io_uring_zcrx_rq *rq)
+{
+	return rq_nr_queued(rq) == rq->ring_entries;
+}
+
 static inline void fill_rqe(const struct io_uring_cqe *cqe,
 			    struct io_uring_zcrx_rqe *rqe)
 {
@@ -421,7 +426,7 @@ static bool flush_refill_queue(struct io_uring *ring,
 	}
 
 	/* should never happen */
-	if (rq_nr_queued(rq_ring) == rq_ring->ring_entries)
+	if (rq_is_full(rq_ring))
 		t_error(1, 0, "Couldn't flush refill ring\n");
 	return true;
 }
@@ -433,8 +438,7 @@ static void return_buffer(struct io_uring *ring,
 	struct io_uring_zcrx_rqe *rqe;
 	unsigned rq_mask;
 
-	if (rq_nr_queued(rq_ring) == rq_ring->ring_entries &&
-	    !flush_refill_queue(ring, rq_ring)) {
+	if (rq_is_full(rq_ring) && !flush_refill_queue(ring, rq_ring)) {
 		printf("RQ is full, drop the buffer\n");
 		return;
 	}
