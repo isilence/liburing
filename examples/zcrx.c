@@ -106,7 +106,6 @@ static long page_size;
 
 static void *area_ptr;
 static void *ring_ptr;
-static size_t ring_size;
 static struct io_uring_zcrx_rq rq_ring;
 static unsigned long area_token;
 static bool stop;
@@ -170,6 +169,8 @@ static struct zc_conn *get_connection(__u64 user_data)
 
 static inline size_t get_refill_ring_size(unsigned int rq_entries)
 {
+	size_t ring_size;
+
 	ring_size = rq_entries * sizeof(struct io_uring_zcrx_rqe);
 	/* add space for the header (head/tail/etc.) */
 	ring_size += page_size;
@@ -251,6 +252,7 @@ static void setup_zcrx(struct io_uring *ring)
 	unsigned int ifindex;
 	unsigned int rq_entries = cfg_rq_entries;
 	unsigned rq_flags = 0;
+	size_t ring_size;
 	int ret;
 
 	ifindex = if_nametoindex(cfg_ifname);
