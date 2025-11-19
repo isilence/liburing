@@ -100,7 +100,6 @@ static size_t cfg_size = 0;
 static unsigned cfg_affinity_mode = AFFINITY_MODE_NONE;
 static unsigned cfg_rq_alloc_mode = RQ_ALLOC_USER;
 static unsigned cfg_area_type = AREA_TYPE_NORMAL;
-static struct sockaddr_in6 cfg_addr;
 
 static long page_size;
 
@@ -542,9 +541,16 @@ static void server_loop(struct io_uring *ring)
 
 static void run_server(void)
 {
+	struct sockaddr_in6 sock_addr;
+	struct sockaddr_in6 *addr6 = (void *)&sock_addr;
 	struct io_uring_params p;
 	struct io_uring ring;
 	int enable, ret;
+
+	memset(addr6, 0, sizeof(*addr6));
+	addr6->sin6_family = AF_INET6;
+	addr6->sin6_port = htons(cfg_port);
+	addr6->sin6_addr = in6addr_any;
 
 	listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
 	if (listen_fd == -1)
@@ -555,7 +561,7 @@ static void run_server(void)
 	if (ret < 0)
 		t_error(1, 0, "setsockopt(SO_REUSEADDR)");
 
-	ret = bind(listen_fd, (struct sockaddr *)&cfg_addr, sizeof(cfg_addr));
+	ret = bind(listen_fd, (struct sockaddr *)&sock_addr, sizeof(sock_addr));
 	if (ret < 0)
 		t_error(1, 0, "bind()");
 
@@ -591,7 +597,6 @@ static void usage(const char *filepath)
 
 static void parse_opts(int argc, char **argv)
 {
-	struct sockaddr_in6 *addr6 = (void *) &cfg_addr;
 	int c;
 
 	if (argc <= 1)
@@ -644,11 +649,6 @@ static void parse_opts(int argc, char **argv)
 		t_error(1, -EINVAL, "Interface is not specified");
 	if (cfg_queue_id == -1)
 		t_error(1, -EINVAL, "Queue idx is not specified");
-
-	memset(addr6, 0, sizeof(*addr6));
-	addr6->sin6_family = AF_INET6;
-	addr6->sin6_port = htons(cfg_port);
-	addr6->sin6_addr = in6addr_any;
 }
 
 static void probe_zcrx(void)
