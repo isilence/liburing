@@ -249,15 +249,23 @@ static void zcrx_populate_area(struct io_uring_zcrx_area_reg *area_reg)
 static void setup_zcrx(struct io_uring *ring)
 {
 	struct io_uring_zcrx_area_reg area_reg;
-	unsigned int ifindex;
 	unsigned int rq_entries = cfg_rq_entries;
+	unsigned int qidx = cfg_queue_id;
+	unsigned zcrx_reg_flags = 0;
 	unsigned rq_flags = 0;
+	unsigned int ifindex;
 	size_t ring_size;
 	int ret;
 
-	ifindex = if_nametoindex(cfg_ifname);
-	if (!ifindex)
-		t_error(1, 0, "bad interface name: %s", cfg_ifname);
+	if (cfg_ifname) {
+		ifindex = if_nametoindex(cfg_ifname);
+		if (!ifindex)
+			t_error(1, 0, "bad interface name: %s", cfg_ifname);
+	} else {
+		zcrx_reg_flags |= ZCRX_REG_NODEV;
+		ifindex = 0;
+		qidx = 0;
+	}
 
 	ring_size = get_refill_ring_size(rq_entries);
 	ring_ptr = NULL;
@@ -281,7 +289,8 @@ static void setup_zcrx(struct io_uring *ring)
 
 	struct io_uring_zcrx_ifq_reg reg = {
 		.if_idx = ifindex,
-		.if_rxq = cfg_queue_id,
+		.if_rxq = qidx,
+		.flags = zcrx_reg_flags,
 		.rq_entries = rq_entries,
 		.area_ptr = uring_ptr_to_u64(&area_reg),
 		.region_ptr = uring_ptr_to_u64(&region_reg),
@@ -655,9 +664,9 @@ static void parse_opts(int argc, char **argv)
 		}
 	}
 
-	if (!cfg_ifname)
-		t_error(1, -EINVAL, "Interface is not specified");
-	if (cfg_queue_id == -1)
+	if (!cfg_ifname && cfg_queue_id != -1)
+		t_error(1, -EINVAL, "Queue index passed for device-less zcrx");
+	if (cfg_ifname && cfg_queue_id == -1)
 		t_error(1, -EINVAL, "Queue idx is not specified");
 }
 
