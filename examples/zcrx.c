@@ -599,6 +599,7 @@ static void parse_opts(int argc, char **argv)
 			cfg_affinity_mode = strtoul(optarg, NULL, 0);
 			if (cfg_affinity_mode >= __AFFINITY_MODE_MAX)
 				t_error(1, 0, "Invalid affinity mode");
+			break;
 		}
 	}
 
