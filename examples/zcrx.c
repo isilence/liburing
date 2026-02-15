@@ -441,7 +441,6 @@ static bool flush_refill_queue(struct io_uring *ring,
 				&ctrl, 0);
 	if (ret < 0) {
 		fprintf(stderr, "Refill ring flush failed %i\n", ret);
-		supports_rq_flush = false;
 		return false;
 	}
 
