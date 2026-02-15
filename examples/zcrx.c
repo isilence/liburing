@@ -90,6 +90,7 @@ struct zc_conn {
 
 static bool zcrx_query_supported;
 static bool supports_rq_flush;
+static bool supports_rx_page_size;
 static unsigned rq_hdr_size;
 static long page_size;
 
@@ -674,6 +675,7 @@ static void probe_zcrx(void)
 	rq_hdr_size = page_size;
 	supports_rq_flush = false;
 	zcrx_query_supported = false;
+	supports_rx_page_size = false;
 
 	ret = io_uring_register(-1, IORING_REGISTER_QUERY, &hdr, 0);
 	if (ret < 0 || hdr.result < 0)
@@ -681,6 +683,7 @@ static void probe_zcrx(void)
 
 	zcrx_query_supported = true;
 	supports_rq_flush = zcrx_query.nr_ctrl_opcodes > ZCRX_CTRL_FLUSH_RQ;
+	supports_rx_page_size = zcrx_query.features & ZCRX_FEATURE_RX_PAGE_SIZE;
 	rq_hdr_size = T_ALIGN_UP(zcrx_query.rq_hdr_size,
 				 zcrx_query.rq_hdr_alignment);
 }
@@ -697,6 +700,7 @@ static void probe_kernel(void)
 	printf("Probe info:\n");
 	printf("\tPAGE_SIZE: %u KB\n", (unsigned)(page_size / 1024));
 	printf("\tzcrx query supported: %s\n", res_name[zcrx_query_supported]);
+	printf("\tCustom rx page size supported: %s\n", res_name[supports_rx_page_size]);
 	printf("\tRQ flush supported: %s\n", res_name[supports_rq_flush]);
 	printf("\tRQ header size: %u B\n", rq_hdr_size);
 }
