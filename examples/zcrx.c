@@ -182,7 +182,6 @@ static inline size_t get_refill_ring_size(unsigned int rq_entries)
 		ring_size += page_size;
 	}
 
-	ring_size += page_size;
 	return T_ALIGN_UP(ring_size, page_size);
 }
 
