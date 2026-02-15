@@ -87,8 +87,9 @@ struct zc_conn {
 	unsigned stat_nr_cqes;
 };
 
-static struct io_uring_query_zcrx zcrx_query;
+static bool zcrx_query_supported;
 static bool supports_rq_flush;
+static unsigned rq_hdr_size;
 static long page_size;
 
 static unsigned cfg_rq_entries = 8192;
@@ -172,15 +173,7 @@ static inline size_t get_refill_ring_size(unsigned int rq_entries)
 	size_t ring_size;
 
 	ring_size = rq_entries * sizeof(struct io_uring_zcrx_rqe);
-	/* add space for the header (head/tail/etc.) */
-	if (zcrx_query.rq_hdr_size) {
-		ring_size += T_ALIGN_UP(zcrx_query.rq_hdr_size,
-					zcrx_query.rq_hdr_alignment);
-	} else {
-		/* query is not available, overestimate it */
-		ring_size += page_size;
-	}
-
+	ring_size += rq_hdr_size;
 	return T_ALIGN_UP(ring_size, page_size);
 }
 
@@ -666,6 +659,7 @@ static void parse_opts(int argc, char **argv)
 
 static void probe_zcrx(void)
 {
+	struct io_uring_query_zcrx zcrx_query = {};
 	struct io_uring_query_hdr hdr = {
 		.size = sizeof(zcrx_query),
 		.query_data = uring_ptr_to_u64(&zcrx_query),
@@ -673,18 +667,35 @@ static void probe_zcrx(void)
 	};
 	int ret;
 
+	/* overestimate at page size if query is not available */
+	rq_hdr_size = page_size;
+	supports_rq_flush = false;
+	zcrx_query_supported = false;
+
 	ret = io_uring_register(-1, IORING_REGISTER_QUERY, &hdr, 0);
 	if (ret < 0 || hdr.result < 0)
 		return;
+
+	zcrx_query_supported = true;
 	supports_rq_flush = zcrx_query.nr_ctrl_opcodes > ZCRX_CTRL_FLUSH_RQ;
+	rq_hdr_size = T_ALIGN_UP(zcrx_query.rq_hdr_size,
+				 zcrx_query.rq_hdr_alignment);
 }
 
 static void probe_kernel(void)
 {
+	static const char * const res_name[] = { "no", "yes" };
+
 	page_size = sysconf(_SC_PAGESIZE);
 	if (page_size < 0)
 		t_error(1, 0, "Can't probe PAGE_SIZE");
 	probe_zcrx();
+
+	printf("Probe info:\n");
+	printf("\tPAGE_SIZE: %u KB\n", (unsigned)(page_size / 1024));
+	printf("\tzcrx query supported: %s\n", res_name[zcrx_query_supported]);
+	printf("\tRQ flush supported: %s\n", res_name[supports_rq_flush]);
+	printf("\tRQ header size: %u B\n", rq_hdr_size);
 }
 
 int main(int argc, char **argv)
