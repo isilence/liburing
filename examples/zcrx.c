@@ -598,6 +598,7 @@ static void run_server(void)
 		server_loop(&ring);
 
 	close(listen_fd);
+	io_uring_queue_exit(&ring);
 }
 
 static void usage(const char *filepath)
