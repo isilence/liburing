@@ -90,6 +90,7 @@ struct zc_conn {
 
 static struct io_uring_query_zcrx zcrx_query;
 static bool supports_rq_flush;
+static long page_size;
 
 static unsigned cfg_rq_entries = 8192;
 static unsigned cfg_cq_entries = 8192;
@@ -103,8 +104,6 @@ static unsigned cfg_affinity_mode = AFFINITY_MODE_NONE;
 static unsigned cfg_rq_alloc_mode = RQ_ALLOC_USER;
 static unsigned cfg_area_type = AREA_TYPE_NORMAL;
 static unsigned cfg_rx_buf_len;
-
-static long page_size;
 
 static void *area_ptr;
 static void *ring_ptr;
@@ -684,15 +683,17 @@ static void probe_zcrx(void)
 	supports_rq_flush = zcrx_query.nr_ctrl_opcodes > ZCRX_CTRL_FLUSH_RQ;
 }
 
-int main(int argc, char **argv)
+static void probe_kernel(void)
 {
 	page_size = sysconf(_SC_PAGESIZE);
-	if (page_size < 0) {
-		perror("sysconf(_SC_PAGESIZE)");
-		return 1;
-	}
-
+	if (page_size < 0)
+		t_error(1, 0, "Can't probe PAGE_SIZE");
 	probe_zcrx();
+}
+
+int main(int argc, char **argv)
+{
+	probe_kernel();
 	parse_opts(argc, argv);
 	run_server();
 	return 0;
