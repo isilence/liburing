@@ -101,7 +101,7 @@ static int cfg_port = 8000;
 static const char *cfg_ifname;
 static int cfg_queue_id = -1;
 static bool cfg_verify_data = false;
-static size_t cfg_size = 0;
+static size_t cfg_io_size = 0;
 static unsigned cfg_affinity_mode = AFFINITY_MODE_NONE;
 static unsigned cfg_rq_alloc_mode = RQ_ALLOC_USER;
 static unsigned cfg_area_type = AREA_TYPE_NORMAL;
@@ -384,7 +384,7 @@ static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
 	conn->sockfd = cqe->res;
 	print_socket_info(conn->sockfd);
 	set_affinity(conn->sockfd);
-	add_recvzc(ring, conn, cfg_size);
+	add_recvzc(ring, conn, cfg_io_size);
 
 	add_accept(ring, listen_fd);
 }
@@ -476,8 +476,8 @@ static void process_recvzc_error(struct io_uring *ring,
 	if (ret == -ENOSPC) {
 		size_t left = 0;
 
-		if (cfg_size) {
-			left = cfg_size - conn->received;
+		if (cfg_io_size) {
+			left = cfg_io_size - conn->received;
 			if (left == 0)
 				t_error(1, 0, "ENOSPC for a finished request");
 		}
@@ -488,9 +488,9 @@ static void process_recvzc_error(struct io_uring *ring,
 
 	if (ret != 0)
 		t_error(1, 0, "invalid final recvzc ret %i", ret);
-	if (cfg_size && conn->received != cfg_size)
+	if (cfg_io_size && conn->received != cfg_io_size)
 		t_error(1, 0, "total receive size mismatch %lu / %lu",
-			conn->received, cfg_size);
+			conn->received, cfg_io_size);
 
 	printf("Connection terminated: received %lu, cqes %i, nr requeues %i\n",
 		conn->received,
@@ -626,7 +626,7 @@ static void parse_opts(int argc, char **argv)
 			cfg_ifname = optarg;
 			break;
 		case 's':
-			cfg_size = strtoul(optarg, NULL, 0);
+			cfg_io_size = strtoul(optarg, NULL, 0);
 			break;
 		case 'q':
 			cfg_queue_id = strtoul(optarg, NULL, 0);
