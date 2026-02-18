@@ -1,6 +1,12 @@
 prefix ?= /usr
 datadir ?= $(prefix)/share
 
+CLANG ?= clang
+BPFTOOL ?= bpftool
+BPF_PROGS_DIR = bpf-progs
+BPF_OUTPUT = output/bpf/
+BPF_VMLINUX ?= /sys/kernel/btf/vmlinux
+
 INSTALL=install
 
 ifneq ($(MAKECMDGOALS),clean)
@@ -298,6 +304,17 @@ ifdef CONFIG_HAVE_CXX
 endif
 all_targets += sq-full-cpp.t
 
+bpf_tests := bpf-nops.c
+opt_deps :=
+
+ifdef BPF_TESTS
+	override CFLAGS += -I$(BPF_OUTPUT)
+	override LDFLAGS += -lbpf
+	test_srcs += $(bpf_tests)
+	opt_deps += bpf-progs
+endif
+
+$(info flags $(CFLAGS))
 
 test_targets := $(patsubst %.c,%,$(test_srcs))
 test_targets := $(patsubst %.cc,%,$(test_targets))
@@ -321,7 +338,7 @@ helpers.o: helpers.c
 
 LIBURING := $(shell if [ -e ../src/liburing.a ]; then echo ../src/liburing.a; fi)
 
-%.t: %.c $(helpers) helpers.h $(LIBURING)
+%.t: %.c $(helpers) helpers.h $(LIBURING) $(opt_deps)
 	$(QUIET_CC)$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(helpers) $(LDFLAGS)
 
 #
@@ -336,6 +353,29 @@ LIBURING := $(shell if [ -e ../src/liburing.a ]; then echo ../src/liburing.a; fi
 	$(patsubst -Wmissing-prototypes,,$(CXXFLAGS)) \
 	-o $@ $< $(helpers) $(LDFLAGS)
 
+BPF_PROGS = nops_loop.bpf.c
+
+CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
+	| sed -n '/<...> search starts here:/,/End of search list./{ s| \(/.*\)|-idirafter \1|p }')
+
+$(BPF_OUTPUT)/vmlinux.h:
+	mkdir -p $(BPF_OUTPUT)
+	$(BPFTOOL) btf dump file $(BPF_VMLINUX) format c > $@
+
+# Build BPF code
+$(BPF_OUTPUT)/%.bpf.o: $(BPF_PROGS_DIR)/%.bpf.c $(wildcard %.h) $(BPF_OUTPUT)/vmlinux.h
+	mkdir -p ${BPF_OUTPUT}
+	$(CLANG) -g -O2 -target bpf \
+		     -I$(BPF_OUTPUT) $(CLANG_BPF_SYS_INCLUDES) \
+		     -Wno-missing-declarations \
+		     -c $(filter %.c,$^) -o $(patsubst %.bpf.o,%.tmp.bpf.o,$@) -mcpu=v4
+	$(BPFTOOL) gen object $@ $(patsubst %.bpf.o,%.tmp.bpf.o,$@)
+
+$(BPF_OUTPUT)/%.skel.h: $(BPF_OUTPUT)/%.bpf.o $(BPF_OUTPUT)/vmlinux.h
+	$(BPFTOOL) gen skeleton $< > $@
+
+bpf-progs: $(patsubst %.bpf.c,$(BPF_OUTPUT)/%.bpf.o,$(BPF_PROGS)) \
+			$(patsubst %.bpf.c,$(BPF_OUTPUT)/%.skel.h,$(BPF_PROGS))
 
 install: $(test_targets) runtests.sh runtests-loop.sh
 	$(INSTALL) -D -d -m 755 $(datadir)/liburing-test/
@@ -362,4 +402,4 @@ runtests-loop: all
 runtests-parallel: $(run_test_targets)
 	@echo "All tests passed"
 
-.PHONY: all install clean runtests runtests-loop runtests-parallel
+.PHONY: all install clean runtests runtests-loop runtests-parallel bpf-progs
