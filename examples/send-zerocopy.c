@@ -421,16 +421,16 @@ static void do_tx(struct thread_data *td, int domain, int type, int protocol)
 			else {
 				io_uring_prep_send_zc(sqe, fd, buf,
 						     cfg_payload_len, msg_flags, 0);
-				if (cfg_fixed_buf) {
-					sqe->ioprio |= IORING_RECVSEND_FIXED_BUF;
-					sqe->buf_index = buf_idx;
-				}
 			}
-			sqe->user_data = 1;
+			if (cfg_fixed_buf) {
+				sqe->ioprio |= IORING_RECVSEND_FIXED_BUF;
+				sqe->buf_index = buf_idx;
+			}
 			if (cfg_fixed_files) {
 				sqe->fd = 0;
 				sqe->flags |= IOSQE_FIXED_FILE;
 			}
+			sqe->user_data = 1;
 		}
 
 		if (cfg_defer_taskrun && compl_cqes >= notif_slack)
