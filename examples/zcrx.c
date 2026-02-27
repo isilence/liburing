@@ -450,6 +450,22 @@ static void return_buffer(struct io_uring *ring,
 	io_uring_smp_store_release(rq_ring->ktail, ++rq_ring->rq_tail);
 }
 
+static void print_zcrx_info(struct t_req_zcrx *req)
+{
+	unsigned long finish_time, dt;
+
+	finish_time = gettimeofday_ms();
+	dt = finish_time - req->base.start_time;
+
+	printf("zcrx finished: received %lu (MB=%lu), cqes %i, requeues %i, ms %lu, MB/s=%lu\n",
+		req->received,
+		req->received >> 20,
+		req->stat_nr_cqes,
+		req->stat_nr_reqs - 1,
+		dt,
+		(req->received >> 20) * 1000 / dt);
+}
+
 static void queue_zcrx_sqe(struct io_uring *ring, struct t_req_zcrx *req, size_t len)
 {
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
@@ -466,7 +482,6 @@ static void process_recvzc_error(struct io_uring *ring,
 				 struct t_req_zcrx *req, int ret)
 {
 	struct t_conn *conn = req->conn;
-	unsigned long finish_time, dt;
 
 	if (ret == -ENOSPC) {
 		size_t left = 0;
@@ -487,17 +502,7 @@ static void process_recvzc_error(struct io_uring *ring,
 		t_error(1, 0, "total receive size mismatch %lu / %lu",
 			req->received, req->limit);
 
-	finish_time = gettimeofday_ms();
-	dt = finish_time - req->base.start_time;
-
-	printf("zcrx finished: received %lu (MB=%lu), cqes %i, requeues %i, ms %lu, MB/s=%lu\n",
-		req->received,
-		req->received >> 20,
-		req->stat_nr_cqes,
-		req->stat_nr_reqs - 1,
-		dt,
-		(req->received >> 20) * 1000 / dt);
-
+	print_zcrx_info(req);
 	free(req);
 	close(conn->sockfd);
 	free(conn);
