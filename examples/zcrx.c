@@ -319,14 +319,6 @@ static void setup_zcrx(struct io_uring *ring)
 	area_token = area_reg.rq_area_token;
 }
 
-static void add_accept(struct io_uring *ring, int sockfd)
-{
-	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-
-	io_uring_prep_accept(sqe, sockfd, NULL, NULL, 0);
-	sqe->user_data = REQ_TYPE_ACCEPT;
-}
-
 static void add_recvzc(struct io_uring *ring, struct zc_conn *conn, size_t len)
 {
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
@@ -361,29 +353,6 @@ static void print_socket_info(int sockfd)
 
 	printf("socket accepted: fd %i, Peer IP %s, Peer port %d\n",
 		sockfd, ip_str, port);
-}
-
-static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
-{
-	struct zc_conn *conn;
-
-	if (cqe->res < 0) {
-		printf("Accept failed %i, terminate\n", cqe->res);
-		stop = true;
-		return;
-	}
-
-	conn = aligned_alloc(64, sizeof(*conn));
-	if (!conn)
-		t_error(1, 0, "can't allocate conn structure");
-
-	memset(conn, 0, sizeof(*conn));
-	conn->sockfd = cqe->res;
-	print_socket_info(conn->sockfd);
-	set_affinity(conn->sockfd);
-	add_recvzc(ring, conn, cfg_io_size);
-
-	add_accept(ring, listen_fd);
 }
 
 static void verify_data(__u8 *data, size_t size, unsigned long seq)
@@ -524,6 +493,42 @@ static void process_recvzc(struct io_uring *ring,
 	return_buffer(ring, &rq_ring, cqe);
 }
 
+static void queue_accept_sqe(struct io_uring *ring, int sockfd)
+{
+	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+	io_uring_prep_accept(sqe, sockfd, NULL, NULL, 0);
+	sqe->user_data = REQ_TYPE_ACCEPT;
+}
+
+static void add_req_accept(struct io_uring *ring, int sockfd)
+{
+	queue_accept_sqe(ring, sockfd);
+}
+
+static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
+{
+	struct zc_conn *conn;
+
+	if (cqe->res < 0) {
+		printf("Accept failed %i, terminate\n", cqe->res);
+		stop = true;
+		return;
+	}
+
+	conn = aligned_alloc(64, sizeof(*conn));
+	if (!conn)
+		t_error(1, 0, "can't allocate conn structure");
+
+	memset(conn, 0, sizeof(*conn));
+	conn->sockfd = cqe->res;
+	print_socket_info(conn->sockfd);
+	set_affinity(conn->sockfd);
+	add_recvzc(ring, conn, cfg_io_size);
+
+	queue_accept_sqe(ring, listen_fd);
+}
+
 static void server_loop(struct io_uring *ring)
 {
 	struct io_uring_cqe *cqe;
@@ -593,7 +598,7 @@ static void run_server(void)
 		t_error(1, ret, "ring init failed");
 
 	setup_zcrx(&ring);
-	add_accept(&ring, listen_fd);
+	add_req_accept(&ring, listen_fd);
 
 	while (!stop)
 		server_loop(&ring);
