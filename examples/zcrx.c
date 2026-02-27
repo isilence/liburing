@@ -77,7 +77,7 @@ enum {
 
 enum {
 	REQ_TYPE_ACCEPT		= 1,
-	REQ_TYPE_RX		= 2,
+	REQ_TYPE_ZCRX		= 2,
 };
 
 struct zc_conn {
@@ -86,6 +86,30 @@ struct zc_conn {
 	unsigned stat_nr_reqs;
 	unsigned stat_nr_cqes;
 };
+
+struct t_request {
+	unsigned type;
+};
+
+struct t_req_zcrx {
+	struct t_request base;
+	struct zc_conn *conn;
+};
+
+struct t_req_accept {
+	struct t_request base;
+	int sockfd;
+};
+
+static inline struct t_req_accept *t_base_to_accept(struct t_request *req)
+{
+	return (struct t_req_accept *)req;
+}
+
+static inline struct t_req_zcrx *t_base_to_zcrx(struct t_request *req)
+{
+	return (struct t_req_zcrx *)req;
+}
 
 static bool zcrx_query_supported;
 static bool supports_rq_flush;
@@ -116,7 +140,6 @@ static __u32 zcrx_id;
 static int dmabuf_fd;
 static int memfd;
 
-static int listen_fd;
 static int target_cpu = -1;
 
 static int get_sock_cpu(int sockfd)
@@ -161,12 +184,6 @@ static void set_affinity(int sockfd)
 	if (sched_setaffinity(0, sizeof(mask), &mask))
 		t_error(1, errno, "sched_setaffinity() failed\n");
 	target_cpu = new_cpu;
-}
-
-static struct zc_conn *get_connection(__u64 user_data)
-{
-	user_data &= ~REQ_TYPE_MASK;
-	return (struct zc_conn *)(unsigned long)user_data;
 }
 
 static inline size_t get_refill_ring_size(unsigned int rq_entries)
@@ -421,29 +438,23 @@ static void return_buffer(struct io_uring *ring,
 	io_uring_smp_store_release(rq_ring->ktail, ++rq_ring->rq_tail);
 }
 
-static void queue_zcrx_sqe(struct io_uring *ring, struct zc_conn *conn, size_t len)
+static void queue_zcrx_sqe(struct io_uring *ring, struct t_req_zcrx *req, size_t len)
 {
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-	__u64 token;
-
-	token = (__u64)(unsigned long)conn;
-	token |= REQ_TYPE_RX;
+	struct zc_conn *conn = req->conn;
 
 	conn->stat_nr_reqs++;
 	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, conn->sockfd, NULL, len, 0);
 	sqe->ioprio |= IORING_RECV_MULTISHOT;
 	sqe->zcrx_ifq_idx = zcrx_id;
-	sqe->user_data = token;
-}
-
-static void add_req_zcrx(struct io_uring *ring, struct zc_conn *conn, size_t len)
-{
-	queue_zcrx_sqe(ring, conn, len);
+	sqe->user_data = uring_ptr_to_u64(&req->base);
 }
 
 static void process_recvzc_error(struct io_uring *ring,
-				 struct zc_conn *conn, int ret)
+				 struct t_req_zcrx *req, int ret)
 {
+	struct zc_conn *conn = req->conn;
+
 	if (ret == -ENOSPC) {
 		size_t left = 0;
 
@@ -453,7 +464,7 @@ static void process_recvzc_error(struct io_uring *ring,
 				t_error(1, 0, "ENOSPC for a finished request");
 		}
 
-		queue_zcrx_sqe(ring, conn, left);
+		queue_zcrx_sqe(ring, req, left);
 		return;
 	}
 
@@ -468,14 +479,17 @@ static void process_recvzc_error(struct io_uring *ring,
 		conn->stat_nr_cqes,
 		conn->stat_nr_reqs - 1);
 
+	free(req);
 	close(conn->sockfd);
 	free(conn);
 }
 
 static void process_recvzc(struct io_uring *ring,
+			   struct t_request *base_req,
 			   struct io_uring_cqe *cqe)
 {
-	struct zc_conn *conn = get_connection(cqe->user_data);
+	struct t_req_zcrx *req = t_base_to_zcrx(base_req);
+	struct zc_conn *conn = req->conn;
 	const struct io_uring_zcrx_cqe *rcqe;
 	uint64_t mask;
 	__u8 *data;
@@ -483,7 +497,7 @@ static void process_recvzc(struct io_uring *ring,
 	conn->stat_nr_cqes++;
 
 	if (!(cqe->flags & IORING_CQE_F_MORE)) {
-		process_recvzc_error(ring, conn, cqe->res);
+		process_recvzc_error(ring, req, cqe->res);
 		return;
 	}
 	if (cqe->res < 0)
@@ -498,25 +512,51 @@ static void process_recvzc(struct io_uring *ring,
 	return_buffer(ring, &rq_ring, cqe);
 }
 
-static void queue_accept_sqe(struct io_uring *ring, int sockfd)
+static void add_req_zcrx(struct io_uring *ring, struct zc_conn *conn, size_t len)
+{
+	struct t_req_zcrx *req;
+
+	req = t_aligned_alloc(64, sizeof(*req));
+	if (!req)
+		t_error(1, -ENOMEM, "can't allocate zcrx req\n");
+
+	req->base.type = REQ_TYPE_ZCRX;
+	req->conn = conn;
+	queue_zcrx_sqe(ring, req, len);
+}
+
+static void queue_accept_sqe(struct io_uring *ring, struct t_req_accept *req)
 {
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
 
-	io_uring_prep_accept(sqe, sockfd, NULL, NULL, 0);
-	sqe->user_data = REQ_TYPE_ACCEPT;
+	io_uring_prep_accept(sqe, req->sockfd, NULL, NULL, 0);
+	sqe->user_data = uring_ptr_to_u64(&req->base);
 }
 
 static void add_req_accept(struct io_uring *ring, int sockfd)
 {
-	queue_accept_sqe(ring, sockfd);
+	struct t_req_accept *req;
+
+	req = t_aligned_alloc(64, sizeof(*req));
+	if (!req)
+		t_error(1, -ENOMEM, "can't allocate accept req\n");
+
+	req->base.type = REQ_TYPE_ACCEPT;
+	req->sockfd = sockfd;
+	queue_accept_sqe(ring, req);
 }
 
-static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
+static void process_accept(struct io_uring *ring,
+			   struct t_request *base_req,
+			   struct io_uring_cqe *cqe)
 {
+	struct t_req_accept *req = t_base_to_accept(base_req);
 	struct zc_conn *conn;
 
 	if (cqe->res < 0) {
 		printf("Accept failed %i, terminate\n", cqe->res);
+		close(req->sockfd);
+		free(req);
 		stop = true;
 		return;
 	}
@@ -531,8 +571,7 @@ static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
 	set_affinity(conn->sockfd);
 
 	add_req_zcrx(ring, conn, cfg_io_size);
-
-	queue_accept_sqe(ring, listen_fd);
+	queue_accept_sqe(ring, req);
 }
 
 static void server_loop(struct io_uring *ring)
@@ -546,12 +585,14 @@ static void server_loop(struct io_uring *ring)
 		t_error(1, ret, "io_uring_submit_and_wait failed\n");
 
 	io_uring_for_each_cqe(ring, head, cqe) {
-		switch (cqe->user_data & REQ_TYPE_MASK) {
+		struct t_request *req = (void *)(unsigned long)cqe->user_data;
+
+		switch (req->type) {
 		case REQ_TYPE_ACCEPT:
-			process_accept(ring, cqe);
+			process_accept(ring, req, cqe);
 			break;
-		case REQ_TYPE_RX:
-			process_recvzc(ring, cqe);
+		case REQ_TYPE_ZCRX:
+			process_recvzc(ring, req, cqe);
 			break;
 		default:
 			t_error(1, 0, "unknown cqe");
@@ -566,6 +607,7 @@ static void run_server(void)
 	struct sockaddr_in6 sock_addr;
 	struct sockaddr_in6 *addr6 = (void *)&sock_addr;
 	struct io_uring_params p;
+	unsigned listen_fd;
 	struct io_uring ring;
 	int enable, ret;
 
@@ -609,7 +651,6 @@ static void run_server(void)
 	while (!stop)
 		server_loop(&ring);
 
-	close(listen_fd);
 	io_uring_queue_exit(&ring);
 }
 
