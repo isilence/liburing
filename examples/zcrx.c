@@ -83,12 +83,11 @@ enum {
 struct zc_conn {
 	int sockfd;
 	unsigned long received;
-	unsigned stat_nr_reqs;
-	unsigned stat_nr_cqes;
 };
 
 struct t_request {
 	unsigned type;
+	unsigned long start_time;
 };
 
 struct t_req_zcrx {
@@ -97,6 +96,8 @@ struct t_req_zcrx {
 
 	unsigned long received;
 	unsigned long limit;
+	unsigned stat_nr_reqs;
+	unsigned stat_nr_cqes;
 };
 
 struct t_req_accept {
@@ -144,6 +145,14 @@ static int dmabuf_fd;
 static int memfd;
 
 static int target_cpu = -1;
+
+static unsigned long gettimeofday_ms(void)
+{
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
+	return (tv.tv_sec * 1000) + (tv.tv_usec / 1000);
+}
 
 static int get_sock_cpu(int sockfd)
 {
@@ -446,7 +455,7 @@ static void queue_zcrx_sqe(struct io_uring *ring, struct t_req_zcrx *req, size_t
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
 	struct zc_conn *conn = req->conn;
 
-	conn->stat_nr_reqs++;
+	req->stat_nr_reqs++;
 	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, conn->sockfd, NULL, len, 0);
 	sqe->ioprio |= IORING_RECV_MULTISHOT;
 	sqe->zcrx_ifq_idx = zcrx_id;
@@ -457,6 +466,7 @@ static void process_recvzc_error(struct io_uring *ring,
 				 struct t_req_zcrx *req, int ret)
 {
 	struct zc_conn *conn = req->conn;
+	unsigned long finish_time, dt;
 
 	if (ret == -ENOSPC) {
 		size_t left = 0;
@@ -477,10 +487,16 @@ static void process_recvzc_error(struct io_uring *ring,
 		t_error(1, 0, "total receive size mismatch %lu / %lu",
 			req->received, req->limit);
 
-	printf("Connection terminated: received %lu, cqes %i, nr requeues %i\n",
-		conn->received,
-		conn->stat_nr_cqes,
-		conn->stat_nr_reqs - 1);
+	finish_time = gettimeofday_ms();
+	dt = finish_time - req->base.start_time;
+
+	printf("zcrx finished: received %lu (MB=%lu), cqes %i, requeues %i, ms %lu, MB/s=%lu\n",
+		req->received,
+		req->received >> 20,
+		req->stat_nr_cqes,
+		req->stat_nr_reqs - 1,
+		dt,
+		(req->received >> 20) * 1000 / dt);
 
 	free(req);
 	close(conn->sockfd);
@@ -497,7 +513,7 @@ static void process_recvzc(struct io_uring *ring,
 	uint64_t mask;
 	__u8 *data;
 
-	conn->stat_nr_cqes++;
+	req->stat_nr_cqes++;
 
 	if (!(cqe->flags & IORING_CQE_F_MORE)) {
 		process_recvzc_error(ring, req, cqe->res);
@@ -526,6 +542,7 @@ static void add_req_zcrx(struct io_uring *ring, struct zc_conn *conn, size_t len
 
 	memset(req, 0, sizeof(*req));
 	req->base.type = REQ_TYPE_ZCRX;
+	req->base.start_time = gettimeofday_ms();
 	req->conn = conn;
 	req->limit = len;
 	queue_zcrx_sqe(ring, req, len);
@@ -548,6 +565,7 @@ static void add_req_accept(struct io_uring *ring, int sockfd)
 		t_error(1, -ENOMEM, "can't allocate accept req\n");
 
 	req->base.type = REQ_TYPE_ACCEPT;
+	req->base.start_time = gettimeofday_ms();
 	req->sockfd = sockfd;
 	queue_accept_sqe(ring, req);
 }
