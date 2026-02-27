@@ -80,7 +80,7 @@ enum {
 	REQ_TYPE_ZCRX		= 2,
 };
 
-struct zc_conn {
+struct t_conn {
 	int sockfd;
 	unsigned long received;
 };
@@ -92,7 +92,7 @@ struct t_request {
 
 struct t_req_zcrx {
 	struct t_request base;
-	struct zc_conn *conn;
+	struct t_conn *conn;
 
 	unsigned long received;
 	unsigned long limit;
@@ -453,7 +453,7 @@ static void return_buffer(struct io_uring *ring,
 static void queue_zcrx_sqe(struct io_uring *ring, struct t_req_zcrx *req, size_t len)
 {
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-	struct zc_conn *conn = req->conn;
+	struct t_conn *conn = req->conn;
 
 	req->stat_nr_reqs++;
 	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, conn->sockfd, NULL, len, 0);
@@ -465,7 +465,7 @@ static void queue_zcrx_sqe(struct io_uring *ring, struct t_req_zcrx *req, size_t
 static void process_recvzc_error(struct io_uring *ring,
 				 struct t_req_zcrx *req, int ret)
 {
-	struct zc_conn *conn = req->conn;
+	struct t_conn *conn = req->conn;
 	unsigned long finish_time, dt;
 
 	if (ret == -ENOSPC) {
@@ -508,7 +508,7 @@ static void process_recvzc(struct io_uring *ring,
 			   struct io_uring_cqe *cqe)
 {
 	struct t_req_zcrx *req = t_base_to_zcrx(base_req);
-	struct zc_conn *conn = req->conn;
+	struct t_conn *conn = req->conn;
 	const struct io_uring_zcrx_cqe *rcqe;
 	uint64_t mask;
 	__u8 *data;
@@ -532,7 +532,7 @@ static void process_recvzc(struct io_uring *ring,
 	return_buffer(ring, &rq_ring, cqe);
 }
 
-static void add_req_zcrx(struct io_uring *ring, struct zc_conn *conn, size_t len)
+static void add_req_zcrx(struct io_uring *ring, struct t_conn *conn, size_t len)
 {
 	struct t_req_zcrx *req;
 
@@ -575,7 +575,7 @@ static void process_accept(struct io_uring *ring,
 			   struct io_uring_cqe *cqe)
 {
 	struct t_req_accept *req = t_base_to_accept(base_req);
-	struct zc_conn *conn;
+	struct t_conn *conn;
 
 	if (cqe->res < 0) {
 		printf("Accept failed %i, terminate\n", cqe->res);
