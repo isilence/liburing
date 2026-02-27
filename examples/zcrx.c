@@ -94,6 +94,9 @@ struct t_request {
 struct t_req_zcrx {
 	struct t_request base;
 	struct zc_conn *conn;
+
+	unsigned long received;
+	unsigned long limit;
 };
 
 struct t_req_accept {
@@ -458,8 +461,8 @@ static void process_recvzc_error(struct io_uring *ring,
 	if (ret == -ENOSPC) {
 		size_t left = 0;
 
-		if (cfg_io_size) {
-			left = cfg_io_size - conn->received;
+		if (req->limit) {
+			left = req->limit - req->received;
 			if (left == 0)
 				t_error(1, 0, "ENOSPC for a finished request");
 		}
@@ -470,9 +473,9 @@ static void process_recvzc_error(struct io_uring *ring,
 
 	if (ret != 0)
 		t_error(1, 0, "invalid final recvzc ret %i", ret);
-	if (cfg_io_size && conn->received != cfg_io_size)
+	if (req->limit && req->received != req->limit)
 		t_error(1, 0, "total receive size mismatch %lu / %lu",
-			conn->received, cfg_io_size);
+			req->received, req->limit);
 
 	printf("Connection terminated: received %lu, cqes %i, nr requeues %i\n",
 		conn->received,
@@ -509,6 +512,7 @@ static void process_recvzc(struct io_uring *ring,
 
 	verify_data(data, cqe->res, conn->received);
 	conn->received += cqe->res;
+	req->received += cqe->res;
 	return_buffer(ring, &rq_ring, cqe);
 }
 
@@ -520,8 +524,10 @@ static void add_req_zcrx(struct io_uring *ring, struct zc_conn *conn, size_t len
 	if (!req)
 		t_error(1, -ENOMEM, "can't allocate zcrx req\n");
 
+	memset(req, 0, sizeof(*req));
 	req->base.type = REQ_TYPE_ZCRX;
 	req->conn = conn;
+	req->limit = len;
 	queue_zcrx_sqe(ring, req, len);
 }
 
