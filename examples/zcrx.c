@@ -319,21 +319,6 @@ static void setup_zcrx(struct io_uring *ring)
 	area_token = area_reg.rq_area_token;
 }
 
-static void add_recvzc(struct io_uring *ring, struct zc_conn *conn, size_t len)
-{
-	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-	__u64 token;
-
-	token = (__u64)(unsigned long)conn;
-	token |= REQ_TYPE_RX;
-
-	conn->stat_nr_reqs++;
-	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, conn->sockfd, NULL, len, 0);
-	sqe->ioprio |= IORING_RECV_MULTISHOT;
-	sqe->zcrx_ifq_idx = zcrx_id;
-	sqe->user_data = token;
-}
-
 static void print_socket_info(int sockfd)
 {
 	struct sockaddr_in6 peer_addr;
@@ -436,6 +421,26 @@ static void return_buffer(struct io_uring *ring,
 	io_uring_smp_store_release(rq_ring->ktail, ++rq_ring->rq_tail);
 }
 
+static void queue_zcrx_sqe(struct io_uring *ring, struct zc_conn *conn, size_t len)
+{
+	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+	__u64 token;
+
+	token = (__u64)(unsigned long)conn;
+	token |= REQ_TYPE_RX;
+
+	conn->stat_nr_reqs++;
+	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, conn->sockfd, NULL, len, 0);
+	sqe->ioprio |= IORING_RECV_MULTISHOT;
+	sqe->zcrx_ifq_idx = zcrx_id;
+	sqe->user_data = token;
+}
+
+static void add_req_zcrx(struct io_uring *ring, struct zc_conn *conn, size_t len)
+{
+	queue_zcrx_sqe(ring, conn, len);
+}
+
 static void process_recvzc_error(struct io_uring *ring,
 				 struct zc_conn *conn, int ret)
 {
@@ -448,7 +453,7 @@ static void process_recvzc_error(struct io_uring *ring,
 				t_error(1, 0, "ENOSPC for a finished request");
 		}
 
-		add_recvzc(ring, conn, left);
+		queue_zcrx_sqe(ring, conn, left);
 		return;
 	}
 
@@ -524,7 +529,8 @@ static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
 	conn->sockfd = cqe->res;
 	print_socket_info(conn->sockfd);
 	set_affinity(conn->sockfd);
-	add_recvzc(ring, conn, cfg_io_size);
+
+	add_req_zcrx(ring, conn, cfg_io_size);
 
 	queue_accept_sqe(ring, listen_fd);
 }
