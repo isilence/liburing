@@ -80,6 +80,16 @@ enum {
 	REQ_TYPE_ZCRX		= 2,
 };
 
+struct t_rq {
+	__u32 *khead;
+	__u32 *ktail;
+	__u32 rq_tail;
+	__u32 nr_entries;
+
+	struct io_uring_zcrx_rqe *rqes;
+	void *ring_ptr;
+};
+
 struct t_conn {
 	int sockfd;
 	unsigned long received;
@@ -136,7 +146,7 @@ static unsigned cfg_rx_buf_len;
 
 static void *area_ptr;
 static void *ring_ptr;
-static struct io_uring_zcrx_rq rq_ring;
+static struct t_rq rq_ring;
 static unsigned long area_token;
 static bool stop;
 static __u32 zcrx_id;
@@ -342,7 +352,7 @@ static void setup_zcrx(struct io_uring *ring)
 	rq_ring.ktail = (unsigned int *)((char *)ring_ptr + reg.offsets.tail);
 	rq_ring.rqes = (struct io_uring_zcrx_rqe *)((char *)ring_ptr + reg.offsets.rqes);
 	rq_ring.rq_tail = 0;
-	rq_ring.ring_entries = reg.rq_entries;
+	rq_ring.nr_entries = reg.rq_entries;
 
 	zcrx_id = reg.zcrx_id;
 	area_token = area_reg.rq_area_token;
@@ -387,14 +397,14 @@ static void verify_data(__u8 *data, size_t size, unsigned long seq)
 	}
 }
 
-static unsigned rq_nr_queued(struct io_uring_zcrx_rq *rq)
+static unsigned rq_nr_queued(struct t_rq *rq)
 {
 	return rq->rq_tail - io_uring_smp_load_acquire(rq->khead);
 }
 
-static bool rq_is_full(struct io_uring_zcrx_rq *rq)
+static bool rq_is_full(struct t_rq *rq)
 {
-	return rq_nr_queued(rq) == rq->ring_entries;
+	return rq_nr_queued(rq) == rq->nr_entries;
 }
 
 static inline void fill_rqe(const struct io_uring_cqe *cqe,
@@ -407,7 +417,7 @@ static inline void fill_rqe(const struct io_uring_cqe *cqe,
 }
 
 static bool flush_refill_queue(struct io_uring *ring,
-			       struct io_uring_zcrx_rq *rq_ring)
+			       struct t_rq *rq_ring)
 {
 	struct zcrx_ctrl ctrl = {
 		.zcrx_id = zcrx_id,
@@ -432,7 +442,7 @@ static bool flush_refill_queue(struct io_uring *ring,
 }
 
 static void return_buffer(struct io_uring *ring,
-			  struct io_uring_zcrx_rq *rq_ring,
+			  struct t_rq *rq_ring,
 			  const struct io_uring_cqe *cqe)
 {
 	struct io_uring_zcrx_rqe *rqe;
@@ -443,7 +453,7 @@ static void return_buffer(struct io_uring *ring,
 		return;
 	}
 
-	rq_mask = rq_ring->ring_entries - 1;
+	rq_mask = rq_ring->nr_entries - 1;
 	/* processed, return back to the kernel */
 	rqe = &rq_ring->rqes[rq_ring->rq_tail & rq_mask];
 	fill_rqe(cqe, rqe);
