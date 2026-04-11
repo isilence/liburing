@@ -84,8 +84,10 @@ struct t_rq {
 	__u32 *khead;
 	__u32 *ktail;
 	__u32 rq_tail;
+	__u32 commited_tail;
 	__u32 nr_entries;
 
+	unsigned commit_batch;
 	struct io_uring_zcrx_rqe *rqes;
 	void *ring_ptr;
 };
@@ -348,10 +350,11 @@ static void setup_zcrx(struct io_uring *ring)
 			t_error(1, 0, "mmap(): refill ring");
 	}
 
+	memset(&rq_ring, 0, sizeof(rq_ring));
 	rq_ring.khead = (unsigned int *)((char *)ring_ptr + reg.offsets.head);
 	rq_ring.ktail = (unsigned int *)((char *)ring_ptr + reg.offsets.tail);
 	rq_ring.rqes = (struct io_uring_zcrx_rqe *)((char *)ring_ptr + reg.offsets.rqes);
-	rq_ring.rq_tail = 0;
+	rq_ring.commit_batch = reg.rq_entries > 128 ? 16 : 1;
 	rq_ring.nr_entries = reg.rq_entries;
 
 	zcrx_id = reg.zcrx_id;
@@ -457,7 +460,12 @@ static void return_buffer(struct io_uring *ring,
 	/* processed, return back to the kernel */
 	rqe = &rq_ring->rqes[rq_ring->rq_tail & rq_mask];
 	fill_rqe(cqe, rqe);
-	io_uring_smp_store_release(rq_ring->ktail, ++rq_ring->rq_tail);
+
+	++rq_ring->rq_tail;
+	if (rq_ring->rq_tail - rq_ring->commited_tail >= rq_ring->commit_batch) {
+		rq_ring->commited_tail = rq_ring->rq_tail;
+		io_uring_smp_store_release(rq_ring->ktail, rq_ring->commited_tail);
+	}
 }
 
 static void print_zcrx_info(struct t_req_zcrx *req)
