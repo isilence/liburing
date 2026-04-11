@@ -85,6 +85,7 @@ struct t_rq {
 	__u32 *ktail;
 	__u32 rq_tail;
 	__u32 commited_tail;
+	__u32 cached_head;
 	__u32 nr_entries;
 
 	unsigned commit_batch;
@@ -402,8 +403,12 @@ static void verify_data(__u8 *data, size_t size, unsigned long seq)
 
 static bool rq_has_space(struct t_rq *rq)
 {
-	unsigned nr = rq->rq_tail - io_uring_smp_load_acquire(rq->khead);
+	unsigned nr = rq->rq_tail - rq->cached_head;
 
+	if (nr == rq->nr_entries) {
+		rq->cached_head = io_uring_smp_load_acquire(rq->khead);
+		nr = rq->rq_tail - rq->cached_head;
+	}
 	return nr != rq->nr_entries;
 }
 
