@@ -369,7 +369,7 @@ static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
 
 	if (cqe->res < 0) {
 		printf("Accept failed %i, terminate\n", cqe->res);
-		stop = false;
+		stop = true;
 		return;
 	}
 
