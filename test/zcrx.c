@@ -25,6 +25,7 @@
 
 #define RQ_ENTRIES		128
 #define RQ_ENTRIES_SMALL	16
+#define AREA_SZ_SMALL		(4096 * 2)
 #define AREA_SZ			(4096 * 132)
 #define HUGEPAGE_AREA_SZ	(16 << 20)
 
@@ -56,6 +57,7 @@ static size_t ro_param_mem_size;
 enum {
 	CONFIG_HUGEPAGE		= 1 << 0,
 	CONFIG_SMALL_RQ		= 1 << 1,
+	CONFIG_AREA_SMALL	= 1 << 2,
 };
 
 static void *write_ro_params(void *src, size_t bytes)
@@ -204,6 +206,9 @@ static void default_reg(struct zcrx_reg *reg, unsigned config_flags)
 {
 	unsigned rq_entries = RQ_ENTRIES;
 
+	if ((config_flags & CONFIG_HUGEPAGE) && (config_flags & CONFIG_AREA_SMALL))
+		t_error(0, 1, "Invalid test reg flags");
+
 	if (config_flags & CONFIG_SMALL_RQ)
 		rq_entries = RQ_ENTRIES_SMALL;
 
@@ -224,6 +229,9 @@ static void default_reg(struct zcrx_reg *reg, unsigned config_flags)
 		.region_ptr = uring_ptr_to_u64(&reg->rq_region),
 	};
 
+	if (config_flags & CONFIG_AREA_SMALL) {
+		reg->area.len = AREA_SZ_SMALL;
+	}
 	if (config_flags & CONFIG_HUGEPAGE) {
 		reg->area.addr = uring_ptr_to_u64(def_hugepage_area_mem);
 		reg->area.len = HUGEPAGE_AREA_SZ;
@@ -1001,6 +1009,169 @@ static int test_abnormal_exit(bool iowq, bool pin_zcrx)
 	return 0;
 }
 
+static int test_area_add_invalid(void)
+{
+	struct io_uring_zcrx_area_reg area_reg;
+	struct t_executor ctx;
+	struct zcrx_ctrl ctrl, ctrl_base;
+	size_t len;
+	int ret;
+
+	ret = __prep_server(&ctx, CONFIG_AREA_SMALL);
+	if (ret)
+		return ret;
+
+	len = ctx.reg.area.len;
+	ctrl_base = (struct zcrx_ctrl) {
+		.op = ZCRX_CTRL_ADD_AREA,
+		.zcrx_id = ctx.reg.zcrx.zcrx_id,
+		.zc_area.area_ptr = uring_ptr_to_u64(&area_reg),
+	};
+
+	ctrl = ctrl_base;
+	area_reg = (struct io_uring_zcrx_area_reg) {
+		.addr = 0,
+		.len = len,
+	};
+	ret = t_zcrx_ctrl(&ctx.ring, &ctrl);
+	if (!ret) {
+		fprintf(stderr, "add area NULL failed %d\n", ret);
+		return ret;
+	}
+
+	ctrl = ctrl_base;
+	area_reg = (struct io_uring_zcrx_area_reg) {
+		.addr = ctx.reg.area.addr,
+		.len = 0,
+	};
+	ret = t_zcrx_ctrl(&ctx.ring, &ctrl);
+	if (!ret) {
+		fprintf(stderr, "add area 0 size failed %d\n", ret);
+		return ret;
+	}
+
+	ctrl = ctrl_base;
+	area_reg = (struct io_uring_zcrx_area_reg) {
+		.addr = ctx.reg.area.addr,
+		.len = 1,
+	};
+	ret = t_zcrx_ctrl(&ctx.ring, &ctrl);
+	if (!ret) {
+		fprintf(stderr, "add area unaligned failed %d\n", ret);
+		return ret;
+	}
+
+	ctrl = ctrl_base;
+	area_reg = (struct io_uring_zcrx_area_reg) {
+		.addr = ctx.reg.area.addr,
+		.len = -1UL,
+	};
+	ret = t_zcrx_ctrl(&ctx.ring, &ctrl);
+	if (!ret) {
+		fprintf(stderr, "add area unaligned failed %d\n", ret);
+		return ret;
+	}
+
+	clean_server(&ctx);
+	return 0;
+}
+
+static int test_area_add(void)
+{
+	struct io_uring_zcrx_area_reg area_reg;
+	struct t_executor ctx;
+	struct zcrx_ctrl ctrl;
+	size_t len;
+	int ret;
+
+	ret = __prep_server(&ctx, CONFIG_AREA_SMALL);
+	if (ret)
+		return ret;
+	len = ctx.reg.area.len;
+
+	ctrl = (struct zcrx_ctrl) {
+		.op = ZCRX_CTRL_ADD_AREA,
+		.zcrx_id = ctx.reg.zcrx.zcrx_id,
+		.zc_area.area_ptr = uring_ptr_to_u64(&area_reg),
+	};
+	area_reg = (struct io_uring_zcrx_area_reg) {
+		.addr = ctx.reg.area.addr + len,
+		.len = len,
+	};
+
+	ret = t_zcrx_ctrl(&ctx.ring, &ctrl);
+	if (ret) {
+		fprintf(stderr, "add area failed %d\n", ret);
+		return ret;
+	}
+	if (area_reg.rq_area_token == ctx.reg.area.rq_area_token) {
+		fprintf(stderr, "area add: dup area tokens\n");
+		return -EINVAL;
+	}
+
+	ret = transfer_bytes(&ctx, len * 2, 0);
+	if (ret) {
+		fprintf(stderr, "Transfer lazy return failed %i\n", ret);
+		return ret;
+	}
+
+	ret = transfer_bytes(&ctx, len, 0);
+	if (!ret) {
+		fprintf(stderr, "Transfer without free buffers %i\n", ret);
+		return ret;
+	}
+
+	clean_server(&ctx);
+	return 0;
+}
+
+static int test_area_add_refill(void)
+{
+	struct io_uring_zcrx_area_reg area_reg;
+	struct t_executor ctx;
+	struct zcrx_ctrl ctrl;
+	size_t len;
+	int ret;
+
+	ret = __prep_server(&ctx, CONFIG_AREA_SMALL);
+	if (ret)
+		return ret;
+	len = ctx.reg.area.len;
+
+	ctrl = (struct zcrx_ctrl) {
+		.op = ZCRX_CTRL_ADD_AREA,
+		.zcrx_id = ctx.reg.zcrx.zcrx_id,
+		.zc_area.area_ptr = uring_ptr_to_u64(&area_reg),
+	};
+	area_reg = (struct io_uring_zcrx_area_reg) {
+		.addr = ctx.reg.area.addr + len,
+		.len = len,
+	};
+
+	/* exhaust the initial pool */
+	ret = transfer_bytes(&ctx, len, 0);
+	if (ret) {
+		fprintf(stderr, "test_area_add_refill: 1st transfer failed %i\n", ret);
+		return ret;
+	}
+
+	ret = t_zcrx_ctrl(&ctx.ring, &ctrl);
+	if (ret) {
+		fprintf(stderr, "test_area_add_refill: add area failed %d\n", ret);
+		return ret;
+	}
+
+	/* only the added pool left, make sure we can return buffers */
+	ret = transfer_bytes(&ctx, 16 * len, T_RETURN_BUFS);
+	if (ret) {
+		fprintf(stderr, "test_area_add_refill: 2nd transfer failed %i\n", ret);
+		return ret;
+	}
+
+	clean_server(&ctx);
+	return 0;
+}
+
 static int flush_invalid(struct t_executor *ctx, struct io_uring_zcrx_rqe *rqes,
 			 unsigned nr)
 {
@@ -1236,6 +1407,28 @@ static int run_tests(void)
 			fprintf(stderr, "test_abnormal_exit(%i, %i) %i\n", iowq, pin_zcrx, ret);
 			return T_EXIT_FAIL;
 		}
+	}
+
+	if (rq_ctrl_op_supported(ZCRX_CTRL_ADD_AREA)) {
+		ret = test_area_add_invalid();
+		if (ret) {
+			fprintf(stderr, "test_area_add_invalid() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		ret = test_area_add();
+		if (ret) {
+			fprintf(stderr, "test_area_add() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		ret = test_area_add_refill();
+		if (ret) {
+			fprintf(stderr, "test_area_add_refill() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+	} else {
+		printf("area add not supported, skip\n");
 	}
 
 	return T_EXIT_PASS;
