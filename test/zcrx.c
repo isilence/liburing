@@ -25,6 +25,7 @@
 
 #define RQ_ENTRIES		128
 #define RQ_ENTRIES_SMALL	16
+#define AREA_SZ_SMALL		(4096 * 2)
 #define AREA_SZ			(4096 * 132)
 #define HUGEPAGE_AREA_SZ	(16 << 20)
 #define T_ALIGN_UP(v, align) (((v) + (align) - 1) & ~((align) - 1))
@@ -53,6 +54,7 @@ static void *def_hugepage_area_mem;
 enum {
 	CONFIG_HUGEPAGE		= 1 << 0,
 	CONFIG_SMALL_RQ		= 1 << 1,
+	CONFIG_AREA_SMALL	= 1 << 2,
 };
 
 static struct io_uring_cqe *submit_and_wait_one(struct io_uring *ring)
@@ -182,6 +184,9 @@ static void default_reg(struct zcrx_reg *reg, unsigned config_flags)
 {
 	unsigned rq_entries = RQ_ENTRIES;
 
+	if (config_flags & CONFIG_HUGEPAGE && config_flags & CONFIG_AREA_SMALL)
+		t_error(0, 1, "Invalid test reg flags");
+
 	if (config_flags & CONFIG_SMALL_RQ)
 		rq_entries = RQ_ENTRIES_SMALL;
 
@@ -202,6 +207,9 @@ static void default_reg(struct zcrx_reg *reg, unsigned config_flags)
 		.region_ptr = uring_ptr_to_u64(&reg->rq_region),
 	};
 
+	if (config_flags & CONFIG_AREA_SMALL) {
+		reg->area.len = AREA_SZ_SMALL;
+	}
 	if (config_flags & CONFIG_HUGEPAGE) {
 		reg->area.addr = uring_ptr_to_u64(def_hugepage_area_mem);
 		reg->area.len = HUGEPAGE_AREA_SZ;
@@ -895,6 +903,51 @@ static int test_recv(void)
 	return 0;
 }
 
+static int test_area_add(void)
+{
+	struct io_uring_zcrx_area_reg area_reg;
+	struct t_executor ctx;
+	struct zcrx_ctrl ctrl;
+	size_t len;
+	int ret;
+
+	if (!rq_ctrl_op_supported(ZCRX_CTRL_ADD_AREA)) {
+		printf("area add not supported, skip\n");
+		return 0;
+	}
+
+	fprintf(stderr, "add area test\n");
+
+	ret = __prep_server(&ctx, CONFIG_AREA_SMALL);
+	if (ret)
+		return ret;
+
+	len = ctx.reg.area.len;
+	ctrl = (struct zcrx_ctrl) {
+		.op = ZCRX_CTRL_ADD_AREA,
+		.zcrx_id = ctx.reg.zcrx.zcrx_id,
+		.zc_area.area_ptr = uring_ptr_to_u64(&area_reg),
+	};
+	area_reg = (struct io_uring_zcrx_area_reg) {
+		.addr = ctx.reg.area.addr + len,
+		.len = len,
+	};
+
+	ret = t_zcrx_ctrl(&ctx.ring, &ctrl);
+	if (ret) {
+		fprintf(stderr, "add area failed %d\n", ret);
+		return ret;
+	}
+
+	ret = transfer_bytes(&ctx, len * 2, 0);
+	if (ret) {
+		fprintf(stderr, "Transfer lazy return failed %i\n", ret);
+		return ret;
+	}
+	clean_server(&ctx);
+	return 0;
+}
+
 static int flush_invalid(struct t_executor *ctx, struct io_uring_zcrx_rqe *rqes,
 			 unsigned nr)
 {
@@ -1115,6 +1168,12 @@ static int run_tests(void)
 	ret = test_recv();
 	if (ret) {
 		fprintf(stderr, "test_recv() failed %i\n", ret);
+		return T_EXIT_FAIL;
+	}
+
+	ret = test_area_add();
+	if (ret) {
+		fprintf(stderr, "test_area_add() failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
