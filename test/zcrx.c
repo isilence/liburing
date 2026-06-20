@@ -1172,6 +1172,115 @@ static int test_area_add_refill(void)
 	return 0;
 }
 
+struct area_add_job {
+	int box_fd;
+	pthread_barrier_t barrier;
+	pthread_t thread;
+
+	void *ptr;
+	int len;
+	int nr;
+};
+
+void *area_add_job_cb(void *arg)
+{
+	struct area_add_job *job = arg;
+	struct io_uring_zcrx_ifq_reg reg;
+	struct io_uring ring;
+	int i, ret;
+
+	ret = t_create_ring(8, &ring, RING_FLAGS);
+	if (ret != T_SETUP_OK) {
+		fprintf(stderr, "area_add_job_cb() create failed: %d\n", ret);
+		exit(-1);
+	}
+	reg = (struct io_uring_zcrx_ifq_reg) {
+		.flags = ZCRX_REG_IMPORT,
+		.if_idx = job->box_fd,
+	};
+	ret = io_uring_register_ifq(&ring, &reg);
+	if (ret) {
+		fprintf(stderr, "area_add_job_cb(): import failed %i\n", ret);
+		exit(-1);
+	}
+	pthread_barrier_wait(&job->barrier);
+
+	for (i = 0; i < job->nr; i++) {
+		struct io_uring_zcrx_area_reg area_reg = {
+			.addr = uring_ptr_to_u64(job->ptr + i * job->len),
+			.len = job->len,
+		};
+		struct zcrx_ctrl ctrl = {
+			.op = ZCRX_CTRL_ADD_AREA,
+			.zcrx_id = reg.zcrx_id,
+			.zc_area.area_ptr = uring_ptr_to_u64(&area_reg),
+		};
+
+		ret = t_zcrx_ctrl(&ring, &ctrl);
+		if (ret) {
+			fprintf(stderr, "test_area_add_refill: add area failed %d\n", ret);
+			exit(ret);
+		}
+	}
+
+	io_uring_queue_exit(&ring);
+	return NULL;
+}
+
+static int test_area_add_concurrent(void)
+{
+	struct zcrx_ctrl export_ctrl;
+	struct area_add_job job;
+	struct t_executor ctx;
+	int ret, box_fd;
+	size_t len;
+
+	ret = __prep_server(&ctx, CONFIG_AREA_SMALL);
+	if (ret)
+		return ret;
+	len = ctx.reg.area.len;
+
+	export_ctrl = (struct zcrx_ctrl) {
+		.zcrx_id = ctx.reg.zcrx.zcrx_id,
+		.op = ZCRX_CTRL_EXPORT,
+	};
+	ret = t_zcrx_ctrl(&ctx.ring, &export_ctrl);
+	box_fd = export_ctrl.zc_export.zcrx_fd;
+	if (ret < 0) {
+		fprintf(stderr, "Export failed %i %i\n", ret, box_fd);
+		return ret;
+	}
+
+	job.box_fd = box_fd;
+	job.ptr = (void *)(unsigned long)ctx.reg.area.addr + len;
+	job.len = len;
+	job.nr = (AREA_SZ - len) / len;
+	if (job.nr > 128)
+		job.nr = 128;
+
+	if (pthread_barrier_init(&job.barrier, NULL, 2) != 0) {
+		fprintf(stderr, "pthread_barrier_init failed %i\n", errno);
+		return -1;
+	}
+	if (pthread_create(&job.thread, NULL, area_add_job_cb, &job) != 0) {
+		fprintf(stderr, "pthread_create failed %i\n", errno);
+		return -1;
+	}
+	pthread_barrier_wait(&job.barrier);
+
+	ret = transfer_bytes(&ctx, 128 * len, T_RETURN_BUFS);
+	if (ret) {
+		fprintf(stderr, "test_area_add_concurrent() transfer failed %i\n", ret);
+		return ret;
+	}
+
+	pthread_join(job.thread, NULL);
+	pthread_barrier_destroy(&job.barrier);
+	close(box_fd);
+	clean_server(&ctx);
+	return 0;
+}
+
 static int flush_invalid(struct t_executor *ctx, struct io_uring_zcrx_rqe *rqes,
 			 unsigned nr)
 {
@@ -1423,6 +1532,12 @@ static int run_tests(void)
 		}
 
 		ret = test_area_add_refill();
+		if (ret) {
+			fprintf(stderr, "test_area_add_refill() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		ret = test_area_add_concurrent();
 		if (ret) {
 			fprintf(stderr, "test_area_add_refill() failed %i\n", ret);
 			return T_EXIT_FAIL;
