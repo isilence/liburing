@@ -238,12 +238,12 @@ static void default_reg(struct zcrx_reg *reg, unsigned config_flags)
 	}
 }
 
-static int test_register_basic(void)
+static int test_register_basic(unsigned extra_flags)
 {
 	struct zcrx_reg reg;
 	int ret;
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret == -EPERM)
 		return ret;
@@ -264,13 +264,13 @@ static int test_register_basic(void)
 	return 0;
 }
 
-static int test_rq(void)
+static int test_rq(unsigned extra_flags)
 {
 	struct zcrx_reg reg;
 	unsigned entries;
 	int ret;
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.zcrx.region_ptr = 0;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EINVAL && ret != -EFAULT) {
@@ -278,7 +278,7 @@ static int test_rq(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.rq_region.user_addr = 0;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EINVAL && ret != -EFAULT) {
@@ -286,7 +286,7 @@ static int test_rq(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.rq_region.size = 0;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EINVAL && ret != -EFAULT) {
@@ -294,7 +294,7 @@ static int test_rq(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	entries = reg.zcrx.rq_entries;
 	reg.zcrx.rq_entries -= 1;
 	ret = try_register_zcrx(&reg.zcrx);
@@ -303,7 +303,7 @@ static int test_rq(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	if (query.rq_hdr_size != page_size && reg.rq_region.size > page_size) {
 		reg.rq_region.size = page_size;
 		ret = try_register_zcrx(&reg.zcrx);
@@ -313,7 +313,7 @@ static int test_rq(void)
 		}
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.zcrx.rq_entries = 0;
 	reg.zcrx.rq_entries = ~reg.zcrx.rq_entries;
 	ret = try_register_zcrx(&reg.zcrx);
@@ -322,7 +322,7 @@ static int test_rq(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.zcrx.rq_entries += (page_size / sizeof(struct io_uring_zcrx_rqe));
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EINVAL && ret != -EFAULT) {
@@ -333,12 +333,12 @@ static int test_rq(void)
 	return 0;
 }
 
-static int test_area(void)
+static int test_area(unsigned extra_flags)
 {
 	struct zcrx_reg reg;
 	int ret;
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.area.len = 0;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EINVAL && ret != -EFAULT) {
@@ -346,7 +346,7 @@ static int test_area(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.area.addr = 0;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EINVAL && ret != -EFAULT) {
@@ -354,7 +354,7 @@ static int test_area(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.zcrx.area_ptr = 0;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EINVAL && ret != -EFAULT) {
@@ -362,7 +362,7 @@ static int test_area(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.area.addr -= page_size;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EFAULT) {
@@ -370,7 +370,7 @@ static int test_area(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.area.len += page_size;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EFAULT) {
@@ -378,7 +378,7 @@ static int test_area(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.area.len -= page_size / 2;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EFAULT && ret != -EINVAL) {
@@ -386,7 +386,7 @@ static int test_area(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.area.len /= 2;
 	reg.area.addr += page_size / 2;
 	ret = try_register_zcrx(&reg.zcrx);
@@ -398,12 +398,12 @@ static int test_area(void)
 	return 0;
 }
 
-static int test_ro_params(void)
+static int test_ro_params(unsigned extra_flags)
 {
 	struct zcrx_reg __reg, *reg;
 	int ret;
 
-	default_reg(&__reg, 0);
+	default_reg(&__reg, extra_flags);
 	reg = write_ro_params(&__reg, sizeof(__reg));
 
 	ret = try_register_zcrx(&reg->zcrx);
@@ -414,12 +414,12 @@ static int test_ro_params(void)
 	return 0;
 }
 
-static int test_invalid_rx_page(void)
+static int test_invalid_rx_page(unsigned extra_flags)
 {
 	struct zcrx_reg reg;
 	int ret;
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.zcrx.rx_buf_len = ~reg.zcrx.rx_buf_len;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EINVAL && ret != -ERANGE && ret != -EOVERFLOW) {
@@ -427,7 +427,7 @@ static int test_invalid_rx_page(void)
 		return ret;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	reg.zcrx.rx_buf_len = 1U << 31;
 	ret = try_register_zcrx(&reg.zcrx);
 	if (ret != -EINVAL && ret != -ERANGE && ret != -EOVERFLOW && ret != -EOPNOTSUPP) {
@@ -438,7 +438,7 @@ static int test_invalid_rx_page(void)
 	return 0;
 }
 
-static int __prep_server(struct t_executor *ctx, unsigned config_flags)
+static int prep_server(struct t_executor *ctx, unsigned config_flags)
 {
 	struct io_uring_zcrx_ifq_reg *zcrx_reg = &ctx->reg.zcrx;
 	char *rqp;
@@ -473,11 +473,6 @@ static int __prep_server(struct t_executor *ctx, unsigned config_flags)
 	}
 
 	return 0;
-}
-
-static int prep_server(struct t_executor *ctx)
-{
-	return __prep_server(ctx, 0);
 }
 
 static void fill_pattern(char *b, size_t size, unsigned long seq)
@@ -627,7 +622,7 @@ static void clean_server(struct t_executor *ctx)
 	clean_server_noring(ctx);
 }
 
-static int test_invalid_recv(void)
+static int test_invalid_recv(unsigned extra_flags)
 {
 	struct io_uring_cqe *cqe;
 	struct io_uring_sqe *sqe;
@@ -635,7 +630,7 @@ static int test_invalid_recv(void)
 	unsigned zcrx_id;
 	int ret;
 
-	ret = prep_server(&ctx);
+	ret = prep_server(&ctx, extra_flags);
 	if (ret)
 		return ret;
 	zcrx_id = ctx.reg.zcrx.zcrx_id;
@@ -683,7 +678,7 @@ static int test_invalid_recv(void)
 	return 0;
 }
 
-static int test_exit_with_inflight(void)
+static int test_exit_with_inflight(unsigned extra_flags)
 {
 	struct io_uring_cqe *cqe;
 	struct io_uring_sqe *sqe;
@@ -691,7 +686,7 @@ static int test_exit_with_inflight(void)
 	unsigned zcrx_id;
 	int ret;
 
-	ret = prep_server(&ctx);
+	ret = prep_server(&ctx, extra_flags);
 	if (ret)
 		return ret;
 	zcrx_id = ctx.reg.zcrx.zcrx_id;
@@ -843,12 +838,12 @@ static int test_zcrx_clone(void)
 	return 0;
 }
 
-static int test_rq_flush(void)
+static int test_rq_flush(unsigned extra_flags)
 {
 	struct t_executor ctx;
 	int ret;
 
-	ret = prep_server(&ctx);
+	ret = prep_server(&ctx, extra_flags);
 	if (ret)
 		return ret;
 
@@ -870,12 +865,12 @@ static int test_rq_flush(void)
 	return 0;
 }
 
-static int test_recv(void)
+static int test_recv(unsigned extra_flags)
 {
 	struct t_executor ctx;
 	int ret;
 
-	ret = prep_server(&ctx);
+	ret = prep_server(&ctx, extra_flags);
 	if (ret)
 		return ret;
 
@@ -893,7 +888,7 @@ static int test_recv(void)
 	clean_server(&ctx);
 
 	if (rq_ctrl_op_supported(ZCRX_CTRL_FLUSH_RQ)) {
-		ret = prep_server(&ctx);
+		ret = prep_server(&ctx, extra_flags);
 		if (ret)
 			return ret;
 
@@ -911,7 +906,7 @@ static int test_recv(void)
 		clean_server(&ctx);
 
 		if (AREA_SZ > (RQ_ENTRIES_SMALL + 1) * page_size) {
-			ret = __prep_server(&ctx, CONFIG_SMALL_RQ);
+			ret = prep_server(&ctx, CONFIG_SMALL_RQ | extra_flags);
 			if (ret)
 				return ret;
 
@@ -927,7 +922,7 @@ static int test_recv(void)
 	return 0;
 }
 
-static int test_abnormal_exit(bool iowq, bool pin_zcrx)
+static int test_abnormal_exit(bool iowq, bool pin_zcrx, unsigned extra_flags)
 {
 	struct io_uring_sqe *sqe;
 	struct io_uring ring;
@@ -943,7 +938,7 @@ static int test_abnormal_exit(bool iowq, bool pin_zcrx)
 		return -1;
 	}
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 	refill_queue_ptr = (char *)(uintptr_t)reg.rq_region.user_addr;
 	memset(refill_queue_ptr, 0, get_rq_size(0));
 
@@ -1009,7 +1004,7 @@ static int test_abnormal_exit(bool iowq, bool pin_zcrx)
 	return 0;
 }
 
-static int test_area_add_invalid(void)
+static int test_area_add_invalid(unsigned extra_flags)
 {
 	struct io_uring_zcrx_area_reg area_reg;
 	struct t_executor ctx;
@@ -1017,7 +1012,7 @@ static int test_area_add_invalid(void)
 	size_t len;
 	int ret;
 
-	ret = __prep_server(&ctx, CONFIG_AREA_SMALL);
+	ret = prep_server(&ctx, CONFIG_AREA_SMALL);
 	if (ret)
 		return ret;
 
@@ -1084,7 +1079,7 @@ static int test_area_add(void)
 	size_t len;
 	int ret;
 
-	ret = __prep_server(&ctx, CONFIG_AREA_SMALL);
+	ret = prep_server(&ctx, CONFIG_AREA_SMALL);
 	if (ret)
 		return ret;
 	len = ctx.reg.area.len;
@@ -1133,7 +1128,7 @@ static int test_area_add_refill(void)
 	size_t len;
 	int ret;
 
-	ret = __prep_server(&ctx, CONFIG_AREA_SMALL);
+	ret = prep_server(&ctx, CONFIG_AREA_SMALL);
 	if (ret)
 		return ret;
 	len = ctx.reg.area.len;
@@ -1235,7 +1230,7 @@ static int test_area_add_concurrent(void)
 	int ret, box_fd;
 	size_t len;
 
-	ret = __prep_server(&ctx, CONFIG_AREA_SMALL);
+	ret = prep_server(&ctx, CONFIG_AREA_SMALL);
 	if (ret)
 		return ret;
 	len = ctx.reg.area.len;
@@ -1302,7 +1297,7 @@ static int flush_invalid(struct t_executor *ctx, struct io_uring_zcrx_rqe *rqes,
 	return 0;
 }
 
-static int test_invalid_rq_pointers(void)
+static int test_invalid_rq_pointers(unsigned extra_flags)
 {
 	struct t_executor ctx;
 	struct io_uring_zcrx_rq *rq = &ctx.rq;
@@ -1310,7 +1305,7 @@ static int test_invalid_rq_pointers(void)
 
 	if (!rq_ctrl_op_supported(ZCRX_CTRL_FLUSH_RQ))
 		return 0;
-	ret = prep_server(&ctx);
+	ret = prep_server(&ctx, extra_flags);
 	if (ret)
 		return ret;
 	*rq->ktail = 0;
@@ -1318,7 +1313,7 @@ static int test_invalid_rq_pointers(void)
 	(void)flush_rq(&ctx.ring, ctx.reg.zcrx.zcrx_id);
 	clean_server(&ctx);
 
-	ret = prep_server(&ctx);
+	ret = prep_server(&ctx, extra_flags);
 	if (ret)
 		return ret;
 	*rq->ktail = 2 * rq->ring_entries;
@@ -1327,7 +1322,7 @@ static int test_invalid_rq_pointers(void)
 	return 0;
 }
 
-static int test_invalid_rqes(void)
+static int test_invalid_rqes(unsigned extra_flags)
 {
 	struct io_uring_zcrx_rqe *rqe, rqes[16];
 	struct t_executor ctx;
@@ -1337,7 +1332,7 @@ static int test_invalid_rqes(void)
 	if (!rq_ctrl_op_supported(ZCRX_CTRL_FLUSH_RQ))
 		return 0;
 
-	ret = prep_server(&ctx);
+	ret = prep_server(&ctx, extra_flags);
 	if (ret)
 		return ret;
 	area_token = ctx.reg.area.rq_area_token;
@@ -1352,7 +1347,7 @@ static int test_invalid_rqes(void)
 		return ret;
 	clean_server(&ctx);
 
-	ret = prep_server(&ctx);
+	ret = prep_server(&ctx, extra_flags);
 	if (ret)
 		return ret;
 	area_token = ctx.reg.area.rq_area_token;
@@ -1381,13 +1376,13 @@ static int test_invalid_rqes(void)
 	return 0;
 }
 
-static int test_area_ro(void)
+static int test_area_ro(unsigned extra_flags)
 {
 	struct zcrx_reg reg;
 	void *area;
 	int ret;
 
-	default_reg(&reg, 0);
+	default_reg(&reg, extra_flags);
 
 	area = mmap(NULL, reg.area.len, PROT_READ,
 		    MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
@@ -1411,7 +1406,7 @@ static int run_tests(void)
 	int ret;
 	int i;
 
-	ret = test_register_basic();
+	ret = test_register_basic(0);
 	if (ret == -EPERM) {
 		printf("-EPERM, zcrx requires NET_ADMIN, skip\n");
 		return T_EXIT_SKIP;
@@ -1421,45 +1416,45 @@ static int run_tests(void)
 		return T_EXIT_FAIL;
 	}
 
-	ret = test_rq();
+	ret = test_rq(0);
 	if (ret) {
 		fprintf(stderr, "test_rq() failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
-	ret = test_area();
+	ret = test_area(0);
 	if (ret) {
 		fprintf(stderr, "test_area() failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
-	ret = test_area_ro();
+	ret = test_area_ro(0);
 	if (ret) {
 		fprintf(stderr, "test_area() failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
 	if (query.features & ZCRX_FEATURE_RX_PAGE_SIZE) {
-		ret = test_invalid_rx_page();
+		ret = test_invalid_rx_page(0);
 		if (ret) {
 			fprintf(stderr, "test_invalid_rx_page() failed %i\n", ret);
 			return T_EXIT_FAIL;
 		}
 	}
 
-	ret = test_ro_params();
+	ret = test_ro_params(0);
 	if (ret) {
 		fprintf(stderr, "test_ro_params() failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
-	ret = test_invalid_recv();
+	ret = test_invalid_recv(0);
 	if (ret) {
 		fprintf(stderr, "test_invalid_recv() failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
-	ret = test_exit_with_inflight();
+	ret = test_exit_with_inflight(0);
 	if (ret) {
 		fprintf(stderr, "test_exit_with_inflight() failed %i\n", ret);
 		return T_EXIT_FAIL;
@@ -1481,25 +1476,25 @@ static int run_tests(void)
 		printf("zcrx import is not supported, skip\n");
 	}
 
-	ret = test_rq_flush();
+	ret = test_rq_flush(0);
 	if (ret) {
 		fprintf(stderr, "test_rq_flush() failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
-	ret = test_invalid_rqes();
+	ret = test_invalid_rqes(0);
 	if (ret) {
 		fprintf(stderr, "test_invalid_rqes() failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
-	ret = test_invalid_rq_pointers();
+	ret = test_invalid_rq_pointers(0);
 	if (ret) {
 		fprintf(stderr, "test_invalid_rq_pointers() failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
-	ret = test_recv();
+	ret = test_recv(0);
 	if (ret) {
 		fprintf(stderr, "test_recv() failed %i\n", ret);
 		return T_EXIT_FAIL;
@@ -1511,7 +1506,7 @@ static int run_tests(void)
 
 		if (pin_zcrx && !(query.register_flags & ZCRX_REG_IMPORT))
 			continue;
-		ret = test_abnormal_exit(iowq, pin_zcrx);
+		ret = test_abnormal_exit(iowq, pin_zcrx, 0);
 		if (ret) {
 			fprintf(stderr, "test_abnormal_exit(%i, %i) %i\n", iowq, pin_zcrx, ret);
 			return T_EXIT_FAIL;
@@ -1519,7 +1514,7 @@ static int run_tests(void)
 	}
 
 	if (rq_ctrl_op_supported(ZCRX_CTRL_ADD_AREA)) {
-		ret = test_area_add_invalid();
+		ret = test_area_add_invalid(0);
 		if (ret) {
 			fprintf(stderr, "test_area_add_invalid() failed %i\n", ret);
 			return T_EXIT_FAIL;
