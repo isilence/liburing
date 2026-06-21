@@ -18,6 +18,9 @@
 #include "liburing.h"
 #include "helpers.h"
 
+#define DEV_ENV_VAR	"LIBURING_TEST_NETIF"
+#define RXQ_ENV_VAR	"LIBURING_TEST_NETRXQ"
+
 #define RING_FLAGS	(IORING_SETUP_DEFER_TASKRUN | \
 			 IORING_SETUP_CQE32 | \
 			 IORING_SETUP_SINGLE_ISSUER | \
@@ -50,15 +53,28 @@ static long page_size;
 
 static void *def_rq_mem;
 static void *def_area_mem;
+static void *def_netdev_area_mem;
+static size_t def_netdev_area_size;
 static void *def_hugepage_area_mem;
 static void *ro_param_mem;
 static size_t ro_param_mem_size;
+
+static int if_idx = -1;
+static int if_queue_idx;
+static bool nodev_supported;
 
 enum {
 	CONFIG_HUGEPAGE		= 1 << 0,
 	CONFIG_SMALL_RQ		= 1 << 1,
 	CONFIG_AREA_SMALL	= 1 << 2,
+	CONFIG_DEVICE		= 1 << 3,
 };
+
+static void wait_device(struct io_uring_zcrx_ifq_reg *reg)
+{
+	if (!(reg->flags & ZCRX_REG_NODEV))
+		usleep(500);
+}
 
 static void *write_ro_params(void *src, size_t bytes)
 {
@@ -159,6 +175,7 @@ static int try_register_zcrx(struct io_uring_zcrx_ifq_reg *reg)
 
 	ret = io_uring_register_ifq(&ring, reg);
 	io_uring_queue_exit(&ring);
+	wait_device(reg);
 	return ret;
 }
 
@@ -223,7 +240,6 @@ static void default_reg(struct zcrx_reg *reg, unsigned config_flags)
 		.flags = 0,
 	};
 	reg->zcrx = (struct io_uring_zcrx_ifq_reg) {
-		.flags = ZCRX_REG_NODEV,
 		.rq_entries = rq_entries,
 		.area_ptr = uring_ptr_to_u64(&reg->area),
 		.region_ptr = uring_ptr_to_u64(&reg->rq_region),
@@ -235,6 +251,16 @@ static void default_reg(struct zcrx_reg *reg, unsigned config_flags)
 	if (config_flags & CONFIG_HUGEPAGE) {
 		reg->area.addr = uring_ptr_to_u64(def_hugepage_area_mem);
 		reg->area.len = HUGEPAGE_AREA_SZ;
+	} else if (config_flags & CONFIG_DEVICE) {
+		reg->area.addr = uring_ptr_to_u64(def_netdev_area_mem);
+		reg->area.len = def_netdev_area_size;
+	}
+
+	if (config_flags & CONFIG_DEVICE) {
+		reg->zcrx.if_idx = if_idx,
+		reg->zcrx.if_rxq = if_queue_idx;
+	} else {
+		reg->zcrx.flags |= ZCRX_REG_NODEV;
 	}
 }
 
@@ -620,6 +646,7 @@ static void clean_server(struct t_executor *ctx)
 {
 	io_uring_queue_exit(&ctx->ring);
 	clean_server_noring(ctx);
+	wait_device(&ctx->reg.zcrx);
 }
 
 static int test_invalid_recv(unsigned extra_flags)
@@ -905,7 +932,7 @@ static int test_recv(unsigned extra_flags)
 		}
 		clean_server(&ctx);
 
-		if (AREA_SZ > (RQ_ENTRIES_SMALL + 1) * page_size) {
+		if (ctx.reg.area.len > (RQ_ENTRIES_SMALL + 1) * page_size) {
 			ret = prep_server(&ctx, CONFIG_SMALL_RQ | extra_flags);
 			if (ret)
 				return ret;
@@ -1001,6 +1028,7 @@ static int test_abnormal_exit(bool iowq, bool pin_zcrx, unsigned extra_flags)
 	close(fds[1]);
 	if (box_fd != -1)
 		close(box_fd);
+	wait_device(&reg.zcrx);
 	return 0;
 }
 
@@ -1403,61 +1431,119 @@ static int test_area_ro(unsigned extra_flags)
 
 static int run_tests(void)
 {
-	int ret;
-	int i;
+	int ret, mode, i;
 
-	ret = test_register_basic(0);
-	if (ret == -EPERM) {
-		printf("-EPERM, zcrx requires NET_ADMIN, skip\n");
-		return T_EXIT_SKIP;
-	}
-	if (ret) {
-		fprintf(stderr, "test_register_basic() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
+	for (mode = 0; mode < 2; mode++) {
+		bool use_device = mode & 1;
+		unsigned extra_flags = 0;
 
-	ret = test_rq(0);
-	if (ret) {
-		fprintf(stderr, "test_rq() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
+		if (use_device) {
+			if (if_idx == -1)
+				continue;
+			extra_flags = CONFIG_DEVICE;
+		} else {
+			if (!nodev_supported)
+				continue;
+		}
 
-	ret = test_area(0);
-	if (ret) {
-		fprintf(stderr, "test_area() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
-
-	ret = test_area_ro(0);
-	if (ret) {
-		fprintf(stderr, "test_area() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
-
-	if (query.features & ZCRX_FEATURE_RX_PAGE_SIZE) {
-		ret = test_invalid_rx_page(0);
+		ret = test_register_basic(extra_flags);
+		if (ret == -EPERM) {
+			printf("-EPERM, zcrx requires NET_ADMIN, skip\n");
+			return T_EXIT_SKIP;
+		}
 		if (ret) {
-			fprintf(stderr, "test_invalid_rx_page() failed %i\n", ret);
+			fprintf(stderr, "test_register_basic() failed %i\n", ret);
 			return T_EXIT_FAIL;
 		}
-	}
 
-	ret = test_ro_params(0);
-	if (ret) {
-		fprintf(stderr, "test_ro_params() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
+		ret = test_rq(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_rq() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
 
-	ret = test_invalid_recv(0);
-	if (ret) {
-		fprintf(stderr, "test_invalid_recv() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
+		ret = test_area(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_area() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
 
-	ret = test_exit_with_inflight(0);
-	if (ret) {
-		fprintf(stderr, "test_exit_with_inflight() failed %i\n", ret);
-		return T_EXIT_FAIL;
+		ret = test_area_ro(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_area() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		if (query.features & ZCRX_FEATURE_RX_PAGE_SIZE) {
+			ret = test_invalid_rx_page(extra_flags);
+			if (ret) {
+				fprintf(stderr, "test_invalid_rx_page() failed %i\n", ret);
+				return T_EXIT_FAIL;
+			}
+		}
+
+		ret = test_ro_params(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_ro_params() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		ret = test_invalid_recv(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_invalid_recv() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		ret = test_exit_with_inflight(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_exit_with_inflight() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		ret = test_rq_flush(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_rq_flush() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		ret = test_invalid_rqes(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_invalid_rqes() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		ret = test_invalid_rq_pointers(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_invalid_rq_pointers() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		ret = test_recv(extra_flags);
+		if (ret) {
+			fprintf(stderr, "test_recv() failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		for (i = 0; i < 4; i++) {
+			bool iowq = i & 1;
+			bool pin_zcrx = i & 2;
+
+			if (pin_zcrx && !(query.register_flags & ZCRX_REG_IMPORT))
+				continue;
+			ret = test_abnormal_exit(iowq, pin_zcrx, extra_flags);
+			if (ret) {
+				fprintf(stderr, "test_abnormal_exit(%i, %i) %i\n", iowq, pin_zcrx, ret);
+				return T_EXIT_FAIL;
+			}
+		}
+
+		if (rq_ctrl_op_supported(ZCRX_CTRL_ADD_AREA)) {
+			ret = test_area_add_invalid(extra_flags);
+			if (ret) {
+				fprintf(stderr, "test_area_add_invalid() failed %i\n", ret);
+				return T_EXIT_FAIL;
+			}
+		}
 	}
 
 	if (query.register_flags & ZCRX_REG_IMPORT) {
@@ -1476,50 +1562,7 @@ static int run_tests(void)
 		printf("zcrx import is not supported, skip\n");
 	}
 
-	ret = test_rq_flush(0);
-	if (ret) {
-		fprintf(stderr, "test_rq_flush() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
-
-	ret = test_invalid_rqes(0);
-	if (ret) {
-		fprintf(stderr, "test_invalid_rqes() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
-
-	ret = test_invalid_rq_pointers(0);
-	if (ret) {
-		fprintf(stderr, "test_invalid_rq_pointers() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
-
-	ret = test_recv(0);
-	if (ret) {
-		fprintf(stderr, "test_recv() failed %i\n", ret);
-		return T_EXIT_FAIL;
-	}
-
-	for (i = 0; i < 4; i++) {
-		bool iowq = i & 1;
-		bool pin_zcrx = i & 2;
-
-		if (pin_zcrx && !(query.register_flags & ZCRX_REG_IMPORT))
-			continue;
-		ret = test_abnormal_exit(iowq, pin_zcrx, 0);
-		if (ret) {
-			fprintf(stderr, "test_abnormal_exit(%i, %i) %i\n", iowq, pin_zcrx, ret);
-			return T_EXIT_FAIL;
-		}
-	}
-
 	if (rq_ctrl_op_supported(ZCRX_CTRL_ADD_AREA)) {
-		ret = test_area_add_invalid(0);
-		if (ret) {
-			fprintf(stderr, "test_area_add_invalid() failed %i\n", ret);
-			return T_EXIT_FAIL;
-		}
-
 		ret = test_area_add();
 		if (ret) {
 			fprintf(stderr, "test_area_add() failed %i\n", ret);
@@ -1579,10 +1622,27 @@ static void setup(void)
 		fprintf(stderr, "null ro\n");
 		t_error(0, 1, "read-only mmap setup failed");
 	}
+
+	if (if_idx != -1) {
+		def_netdev_area_size = 4 * 1024 * 4096;
+		def_netdev_area_size = T_ALIGN_UP(def_netdev_area_size, page_size);
+
+		area_outer = mmap(NULL, def_netdev_area_size + 2 * page_size, PROT_NONE,
+			MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+		if (area_outer == MAP_FAILED)
+			perror("mmap");
+
+		def_netdev_area_mem = mmap(area_outer + page_size, def_netdev_area_size, PROT_READ | PROT_WRITE,
+					MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
+		if (def_netdev_area_mem == MAP_FAILED)
+			perror("mmap");
+	}
 }
 
 int main(int argc, char *argv[])
 {
+	const char *dev_name;
+
 	if (argc > 1)
 		return T_EXIT_SKIP;
 
@@ -1598,8 +1658,36 @@ int main(int argc, char *argv[])
 		printf("zcrx and query are not supported, skip");
 		return T_EXIT_SKIP;
 	}
-	if (!(query.register_flags & ZCRX_REG_NODEV)) {
-		printf("zcrx nodev mode not supported, skip");
+
+	dev_name = getenv(DEV_ENV_VAR);
+	if (dev_name) {
+		const char *rxq_str;
+		char *rxq_end;
+
+		if_idx = if_nametoindex(dev_name);
+		if (!if_idx) {
+			fprintf(stderr, "can't find netdev\n");
+			return T_EXIT_FAIL;
+		}
+		rxq_str = getenv(RXQ_ENV_VAR);
+		if (!rxq_str) {
+			fprintf(stderr, "queue is not specified\n");
+			return T_EXIT_FAIL;
+		}
+		if_queue_idx = strtol(rxq_str, &rxq_end, 10);
+		if (rxq_end == rxq_str || *rxq_end != '\0') {
+			fprintf(stderr, "invalid queue index\n");
+			return T_EXIT_FAIL;
+		}
+
+		printf("note: using device %s(%i) queue idx %i\n",
+			dev_name, if_idx, if_queue_idx);
+	}
+
+	nodev_supported = query.register_flags & ZCRX_REG_NODEV;
+
+	if (!nodev_supported && !dev_name) {
+		printf("zcrx nodev mode is not supported, netdev isn't specified, skip");
 		return T_EXIT_SKIP;
 	}
 
