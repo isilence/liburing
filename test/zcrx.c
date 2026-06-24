@@ -1254,6 +1254,7 @@ static void setup(void)
 				MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
 	if (def_area_mem == MAP_FAILED)
 		perror("mmap");
+	madvise(def_area_mem, AREA_SZ, MADV_NOHUGEPAGE);
 
 	def_hugepage_area_mem = mmap(NULL, HUGEPAGE_AREA_SZ, PROT_READ | PROT_WRITE,
 				     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB,
@@ -1267,12 +1268,6 @@ static void setup(void)
 			  MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
 	if (def_rq_mem == MAP_FAILED)
 		t_error(1, 0, "mmap(): refill ring");
-
-	def_area_mem = mmap(NULL, AREA_SZ, PROT_READ | PROT_WRITE,
-			  MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
-	if (def_area_mem == MAP_FAILED)
-		t_error(1, 0, "mmap(): refill ring");
-	madvise(def_area_mem, AREA_SZ, MADV_NOHUGEPAGE);
 
 	ro_param_mem_size = T_ALIGN_UP(4096 * 2, page_size);
 	ro_param_mem = mmap(NULL, ro_param_mem_size, PROT_READ | PROT_WRITE,
