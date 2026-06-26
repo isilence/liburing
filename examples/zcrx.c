@@ -530,7 +530,7 @@ static void run_server(void)
 	p.flags |= IORING_SETUP_CQSIZE;
 	p.cq_entries = cfg_cq_entries;
 
-	ret = io_uring_queue_init_params(8, &ring, &p);
+	ret = io_uring_queue_init_params(128, &ring, &p);
 	if (ret)
 		t_error(1, ret, "ring init failed");
 
