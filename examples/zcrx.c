@@ -78,6 +78,7 @@ enum {
 enum {
 	REQ_TYPE_ACCEPT		= 1,
 	REQ_TYPE_RX		= 2,
+	REQ_TYPE_ZCRX_NOTIF	= 3,
 };
 
 struct zc_conn {
@@ -90,6 +91,7 @@ struct zc_conn {
 static bool zcrx_query_supported;
 static bool supports_rq_flush;
 static bool supports_rx_page_size;
+static bool supports_zcrx_notif;
 static unsigned rq_hdr_size;
 static long page_size;
 
@@ -247,6 +249,7 @@ static void zcrx_populate_area(struct io_uring_zcrx_area_reg *area_reg)
 
 static void setup_zcrx(struct io_uring *ring)
 {
+	struct zcrx_notification_desc notif_desc;
 	struct io_uring_zcrx_area_reg area_reg;
 	unsigned int rq_entries = cfg_rq_entries;
 	unsigned int qidx = cfg_queue_id;
@@ -295,6 +298,13 @@ static void setup_zcrx(struct io_uring *ring)
 		.region_ptr = uring_ptr_to_u64(&region_reg),
 		.rx_buf_len = cfg_rx_buf_len,
 	};
+
+	if (supports_zcrx_notif) {
+		memset(&notif_desc, 0, sizeof(notif_desc));
+		notif_desc.user_data = REQ_TYPE_ZCRX_NOTIF;
+		notif_desc.type_mask = 1U << ZCRX_NOTIF_NO_BUFFERS;
+		reg.notif_desc = uring_ptr_to_u64(&notif_desc);
+	}
 
 	ret = io_uring_register_ifq(ring, &reg);
 	if (ret)
@@ -384,6 +394,28 @@ static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
 	add_recvzc(ring, conn, cfg_io_size);
 
 	add_accept(ring, listen_fd);
+}
+
+static void process_zcrx_notif(struct io_uring *ring, struct io_uring_cqe *cqe)
+{
+	struct zcrx_ctrl ctrl = {
+		.zcrx_id = zcrx_id,
+		.op = ZCRX_CTRL_ARM_NOTIFICATION,
+	};
+	unsigned type = cqe->res;
+	int ret;
+
+	if (type != ZCRX_NOTIF_NO_BUFFERS)
+		t_error(1, 0, "Unexpected zcrx notification");
+	printf("zcrx allocation failure\n");
+
+	ctrl.zc_arm_notif.notif_type = type;
+	ret = io_uring_register(ring->ring_fd, IORING_REGISTER_ZCRX_CTRL,
+				&ctrl, 0);
+	if (ret < 0) {
+		fprintf(stderr, "Can't rearm notification (%i) %i\n", type, ret);
+		exit(1);
+	}
 }
 
 static void verify_data(__u8 *data, size_t size, unsigned long seq)
@@ -542,6 +574,9 @@ static void server_loop(struct io_uring *ring)
 		case REQ_TYPE_RX:
 			process_recvzc(ring, cqe);
 			break;
+		case REQ_TYPE_ZCRX_NOTIF:
+			process_zcrx_notif(ring, cqe);
+			break;
 		default:
 			t_error(1, 0, "unknown cqe");
 		}
@@ -690,6 +725,7 @@ static void probe_zcrx(void)
 	zcrx_query_supported = true;
 	supports_rq_flush = zcrx_query.nr_ctrl_opcodes > ZCRX_CTRL_FLUSH_RQ;
 	supports_rx_page_size = zcrx_query.features & ZCRX_FEATURE_RX_PAGE_SIZE;
+	supports_zcrx_notif = zcrx_query.nr_ctrl_opcodes > ZCRX_CTRL_ARM_NOTIFICATION;
 	rq_hdr_size = T_ALIGN_UP(zcrx_query.rq_hdr_size,
 				 zcrx_query.rq_hdr_alignment);
 }
@@ -709,6 +745,7 @@ static void probe_kernel(void)
 	printf("\tCustom rx page size supported: %s\n", res_name[supports_rx_page_size]);
 	printf("\tRQ flush supported: %s\n", res_name[supports_rq_flush]);
 	printf("\tRQ header size: %u B\n", rq_hdr_size);
+	printf("\tZCRX notifications supported: %s\n", res_name[supports_zcrx_notif]);
 }
 
 int main(int argc, char **argv)
