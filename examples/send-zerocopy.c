@@ -63,6 +63,7 @@ struct thread_data {
 static int page_size;
 static size_t alloc_size;
 
+static unsigned long cfg_stall_margin_ms = 2000;
 static bool cfg_reg_ringfd = true;
 static bool cfg_fixed_files = 1;
 static bool cfg_zc = 1;
@@ -316,19 +317,44 @@ static void *do_rx(void *arg)
 	return NULL;
 }
 
+static struct io_uring_cqe *wait_cqe_slow(struct io_uring *ring)
+{
+	struct __kernel_timespec ts = {};
+	struct io_uring_cqe *cqe;
+	unsigned long start = 0, dt;
+	int ret;
+
+	if (cfg_stall_margin_ms) {
+		ts.tv_sec = 1;
+		ret = io_uring_wait_cqe_timeout(ring, &cqe, &ts);
+		if (!ret)
+			return cqe;
+		if (ret != -ETIME)
+			t_error(1, ret, "wait cqe failed");
+
+		printf("CQE stall detected (%lu ms)\n", cfg_stall_margin_ms);
+		start = gettimeofday_ms();
+	}
+
+	ret = io_uring_wait_cqe(ring, &cqe);
+	if (ret)
+		t_error(1, ret, "wait cqe failed");
+
+	if (cfg_stall_margin_ms) {
+		dt = gettimeofday_ms() - start;
+		printf("got CQE: dt %lu ms\n", dt + cfg_stall_margin_ms);
+	}
+	return cqe;
+}
+
 static inline struct io_uring_cqe *wait_cqe_fast(struct io_uring *ring)
 {
 	struct io_uring_cqe *cqe;
 	unsigned head;
-	int ret;
 
 	io_uring_for_each_cqe(ring, head, cqe)
 		return cqe;
-
-	ret = io_uring_wait_cqe(ring, &cqe);
-	if (ret)
-		t_error(1, ret, "wait cqe");
-	return cqe;
+	return wait_cqe_slow(ring);
 }
 
 static void do_tx(struct thread_data *td, int domain, int type, int protocol)
