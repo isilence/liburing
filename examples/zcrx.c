@@ -97,7 +97,7 @@ static long page_size;
 
 static unsigned cfg_rq_entries = 8192;
 static unsigned cfg_cq_entries = 8192;
-static long cfg_area_size = 256 * 1024 * 1024;
+static long cfg_area_size = 256 * 1024UL * 1024UL;
 static int cfg_port = 8000;
 static const char *cfg_ifname;
 static int cfg_queue_id = -1;
