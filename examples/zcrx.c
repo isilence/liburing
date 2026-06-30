@@ -369,8 +369,8 @@ static void print_socket_info(int sockfd)
 	}
 	port = ntohs(peer_addr.sin6_port);
 
-	printf("socket accepted: fd %i, Peer IP %s, Peer port %d\n",
-		sockfd, ip_str, port);
+	printf("socket accepted: fd %i, Peer IP %s, Peer port %d, NAPI CPU %d\n",
+		sockfd, ip_str, port, get_sock_cpu(sockfd));
 }
 
 static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
