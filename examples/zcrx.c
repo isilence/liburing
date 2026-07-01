@@ -626,6 +626,7 @@ static void run_server(void)
 	ret = io_uring_queue_init_params(128, &ring, &p);
 	if (ret)
 		t_error(1, ret, "ring init failed");
+	io_uring_register_ring_fd(&ring);
 
 	setup_zcrx(&ring);
 	add_accept(&ring, listen_fd);
