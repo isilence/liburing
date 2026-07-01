@@ -86,6 +86,7 @@ struct zc_conn {
 	unsigned long received;
 	unsigned stat_nr_reqs;
 	unsigned stat_nr_cqes;
+	unsigned long start_time_ms;
 };
 
 static bool zcrx_query_supported;
@@ -120,6 +121,14 @@ static int memfd;
 
 static int listen_fd;
 static int target_cpu = -1;
+
+static unsigned long gettimeofday_ms(void)
+{
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
+	return (tv.tv_sec * 1000) + (tv.tv_usec / 1000);
+}
 
 static int get_sock_cpu(int sockfd)
 {
@@ -344,6 +353,7 @@ static void add_recvzc(struct io_uring *ring, struct zc_conn *conn, size_t len)
 
 	token = (__u64)(unsigned long)conn;
 	token |= REQ_TYPE_RX;
+	conn->start_time_ms = gettimeofday_ms();
 
 	conn->stat_nr_reqs++;
 	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, conn->sockfd, NULL, len, 0);
@@ -502,6 +512,8 @@ static void return_buffer(struct io_uring *ring,
 static void process_recvzc_error(struct io_uring *ring,
 				 struct zc_conn *conn, int ret)
 {
+	unsigned long dt_ms;
+
 	if (ret == -ENOSPC) {
 		size_t left = 0;
 
@@ -521,8 +533,14 @@ static void process_recvzc_error(struct io_uring *ring,
 		t_error(1, 0, "total receive size mismatch %lu / %lu",
 			conn->received, cfg_io_size);
 
-	printf("Connection terminated: received %lu, cqes %i, nr requeues %i\n",
+	dt_ms = gettimeofday_ms() - conn->start_time_ms;
+	if (!dt_ms)
+		dt_ms = 1;
+
+	printf("Connection terminated: received %lu (MB=%lu), MB/s=%lu, cqes %i, nr requeues %i\n",
 		conn->received,
+		(conn->received >> 20),
+		(conn->received >> 20) * 1000 / dt_ms,
 		conn->stat_nr_cqes,
 		conn->stat_nr_reqs - 1);
 
