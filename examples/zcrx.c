@@ -537,10 +537,10 @@ static void process_recvzc_error(struct io_uring *ring,
 	if (!dt_ms)
 		dt_ms = 1;
 
-	printf("Connection terminated: received %lu (MB=%lu), MB/s=%lu, cqes %i, nr requeues %i\n",
-		conn->received,
+	printf("Connection terminated: MB=%lu (MB/s=%lu), ms=%lu, cqes %i, nr requeues %i\n",
 		(conn->received >> 20),
 		(conn->received >> 20) * 1000 / dt_ms,
+		dt_ms,
 		conn->stat_nr_cqes,
 		conn->stat_nr_reqs - 1);
 
