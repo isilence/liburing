@@ -189,10 +189,43 @@ static int do_poll(int fd, int events)
 	return ret && (pfd.revents & events);
 }
 
+static void verify_data(__u8 *data, size_t size, unsigned long seq)
+{
+	size_t i;
+
+	for (i = 0; i < size; i++) {
+		__u8 expected = (__u8)'a' + (seq + i) % 26;
+		__u8 v = data[i];
+
+		if (v != expected)
+			t_error(1, 0, "payload mismatch at %u: expected %u vs got %u, diff %i, base seq %lu, seq %lu",
+				(unsigned)i, expected, v, (int)expected - v,
+				seq, seq + i);
+	}
+}
+
 /* Flush all outstanding bytes for the tcp receive queue */
 static int do_flush_tcp(struct thread_data *td, int fd)
 {
 	int ret;
+
+	if (cfg_verify) {
+		__u8 buffer[4096];
+
+		while (1) {
+			/* MSG_TRUNC flushes up to len bytes */
+			ret = recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT);
+			if (ret == -1 && errno == EAGAIN)
+				return 0;
+			if (ret == -1)
+				t_error(1, errno, "flush");
+			if (!ret)
+				return 1;
+			verify_data(buffer, ret, td->bytes);
+			td->packets++;
+			td->bytes += ret;
+		}
+	}
 
 	/* MSG_TRUNC flushes up to len bytes */
 	ret = recv(fd, NULL, 1 << 21, MSG_TRUNC | MSG_DONTWAIT);
@@ -632,8 +665,6 @@ static void parse_opts(int argc, char **argv)
 	} else {
 		if (cfg_ifname)
 			t_error(1, 0, "Interface can only be specified for tx");
-		if (cfg_verify)
-			t_error(1, 0, "Server mode doesn't support data verification");
 	}
 
 	if (cfg_type == SOCK_DGRAM && cfg_payload_len > max_udp_payload_len)
