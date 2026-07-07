@@ -116,9 +116,6 @@ static unsigned long area_token;
 static bool stop;
 static __u32 zcrx_id;
 
-static int dmabuf_fd;
-static int memfd;
-
 static int listen_fd;
 static int target_cpu = -1;
 
@@ -193,6 +190,8 @@ static void zcrx_populate_area_udmabuf(struct io_uring_zcrx_area_reg *area_reg)
 {
 	struct udmabuf_create create;
 	int ret, devfd;
+	int dmabuf_fd;
+	int memfd;
 
 	devfd = open("/dev/udmabuf", O_RDWR);
 	if (devfd < 0)
