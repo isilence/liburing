@@ -41,6 +41,9 @@
 #include <linux/mman.h>
 #include <signal.h>
 
+#include <linux/memfd.h>
+#include <linux/udmabuf.h>
+
 #include "liburing.h"
 #include "helpers.h"
 
@@ -84,6 +87,7 @@ static int  cfg_port		= 8000;
 static int  cfg_runtime_ms	= 4200;
 static bool cfg_rx_poll		= false;
 static bool cfg_verify;
+static bool cfg_devmem;
 
 static socklen_t cfg_alen;
 static char *str_addr = NULL;
@@ -374,6 +378,133 @@ static inline struct io_uring_cqe *wait_cqe_fast(struct io_uring *ring)
 	return wait_cqe_slow(ring);
 }
 
+static void zcrx_populate_area_udmabuf(struct io_uring_zcrx_area_reg *area_reg,
+					void **area_mem, size_t size)
+{
+	struct udmabuf_create create;
+	int memfd, dmabuf_fd;
+	int ret, devfd;
+	__u8 *mem;
+
+	devfd = open("/dev/udmabuf", O_RDWR);
+	if (devfd < 0)
+		t_error(1, errno, "Failed to open udmabuf dev");
+
+	memfd = memfd_create("udmabuf-test", MFD_ALLOW_SEALING);
+	if (memfd < 0)
+		t_error(1, errno, "Failed to open udmabuf dev");
+
+	ret = fcntl(memfd, F_ADD_SEALS, F_SEAL_SHRINK);
+	if (ret < 0)
+		t_error(1, errno, "Failed to set seals");
+
+	ret = ftruncate(memfd, size);
+	if (ret == -1)
+		t_error(1, errno, "Failed to resize udmabuf");
+
+	memset(&create, 0, sizeof(create));
+	create.memfd = memfd;
+	create.offset = 0;
+	create.size = size;
+	dmabuf_fd = ioctl(devfd, UDMABUF_CREATE, &create);
+	if (dmabuf_fd < 0)
+		t_error(1, errno, "Failed to create udmabuf");
+
+	mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, dmabuf_fd, 0);
+	if (mem == MAP_FAILED)
+		t_error(1, errno, "Failed to mmap udmabuf");
+
+	memset(area_reg, 0, sizeof(*area_reg));
+	area_reg->addr = 0; /* offset into dmabuf */
+	area_reg->len = size;
+	area_reg->flags |= IORING_ZCRX_AREA_DMABUF;
+	area_reg->dmabuf_fd = dmabuf_fd;
+
+	close(devfd);
+	*area_mem = mem;
+}
+
+static int register_buf(struct io_uring *ring, struct io_uring_rsrc_update2 *up)
+{
+	int ret;
+
+	ret = io_uring_register(ring->ring_fd, IORING_REGISTER_BUFFERS_UPDATE,
+				up, sizeof(*up));
+	if (ret == 1)
+		return 0;
+	return ret < 0 ? ret : -1;
+}
+
+static void setup_devmem(struct io_uring *ring)
+{
+	size_t size = T_ALIGN_UP(cfg_payload_len + PATTERN_SIZE, page_size);
+	struct io_uring_zcrx_area_reg area_reg;
+	unsigned qidx = 12;
+	unsigned int ifindex;
+	unsigned rq_entries = 128;
+	size_t ring_size;
+	unsigned rq_flags = 0;
+	unsigned zcrx_reg_flags = 0;
+	void *area_mem;
+	int ret, i;
+
+	if (!cfg_ifname)
+		t_error(1, 0, "need if name");
+
+	ifindex = if_nametoindex(cfg_ifname);
+	if (!ifindex)
+		t_error(1, 0, "bad interface name: %s", cfg_ifname);
+
+	ring_size = rq_entries * sizeof(struct io_uring_zcrx_rqe);
+	ring_size = T_ALIGN_UP(ring_size, page_size) + page_size;
+
+	struct io_uring_region_desc region_reg = {
+		.size = ring_size,
+		.user_addr = 0,
+		.flags = rq_flags,
+	};
+
+	zcrx_populate_area_udmabuf(&area_reg, &area_mem, size);
+
+	for (i = 0; i < size; i++)
+		((__u8 *)area_mem)[i] = 'a' + (i % PATTERN_SIZE);
+	payload = area_mem;
+
+	struct io_uring_zcrx_ifq_reg reg = {
+		.if_idx = ifindex,
+		.if_rxq = qidx,
+		.flags = zcrx_reg_flags,
+		.rq_entries = rq_entries,
+		.area_ptr = uring_ptr_to_u64(&area_reg),
+		.region_ptr = uring_ptr_to_u64(&region_reg),
+	};
+
+	ret = io_uring_register_ifq(ring, &reg);
+	if (ret)
+		t_error(1, 0, "io_uring_register_ifq(): %d", ret);
+
+
+	ret = io_uring_register_buffers_sparse(ring, 1);
+	if (ret)
+		t_error(1, ret, "sparse failed");
+
+	struct io_uring_rsrc_update2 up;
+	struct io_uring_regbuf_desc rd;
+
+	memset(&up, 0, sizeof(up));
+	up.data = uring_ptr_to_u64(&rd);
+	up.nr = 1;
+	up.resv = IORING_RSRC_UPDATE_EXTENDED;
+
+	memset(&rd, 0, sizeof(rd));
+	rd.size = area_reg.len;
+	rd.uaddr = reg.zcrx_id;
+	rd.type = 2 /* IO_REGBUF_TYPE_ZCRX */;
+	ret = register_buf(ring, &up);
+	if (ret)
+		t_error(0, ret, "regbuf reg failed %i\n", ret);
+}
+
 static void do_tx(struct thread_data *td, int domain, int type, int protocol)
 {
 	const int notif_slack = 128;
@@ -405,6 +536,7 @@ static void do_tx(struct thread_data *td, int domain, int type, int protocol)
 	if (connect(fd, (void *)&td->dst_addr, cfg_alen))
 		t_error(1, errno, "connect, idx %i", td->idx);
 
+	ring_flags |= IORING_SETUP_CQE32;
 	ret = io_uring_queue_init(512, &ring, ring_flags);
 	if (ret)
 		t_error(1, ret, "io_uring: queue init");
@@ -423,12 +555,16 @@ static void do_tx(struct thread_data *td, int domain, int type, int protocol)
 			t_error(1, ret, "io_uring: io_uring_register_ring_fd");
 	}
 
-	iov.iov_base = payload;
-	iov.iov_len = cfg_payload_len + PATTERN_SIZE;
+	if (cfg_devmem) {
+		setup_devmem(&ring);
+	} else {
+		iov.iov_base = payload;
+		iov.iov_len = cfg_payload_len + PATTERN_SIZE;
 
-	ret = io_uring_register_buffers(&ring, &iov, 1);
-	if (ret)
-		t_error(1, ret, "io_uring: buffer registration");
+		ret = io_uring_register_buffers(&ring, &iov, 1);
+		if (ret)
+			t_error(1, ret, "io_uring: buffer registration");
+	}
 
 	if (cfg_rx_poll) {
 		struct io_uring_sqe *sqe;
@@ -453,6 +589,8 @@ static void do_tx(struct thread_data *td, int domain, int type, int protocol)
 		for (i = 0; i < cfg_nr_reqs; i++) {
 			char *buf = payload;
 
+			if (cfg_devmem)
+				buf = NULL;
 			if (cfg_verify && cfg_type == SOCK_STREAM)
 				buf += td->bytes % PATTERN_SIZE;
 
@@ -580,8 +718,11 @@ static void parse_opts(int argc, char **argv)
 
 	cfg_payload_len = max_udp_payload_len;
 
-	while ((c = getopt(argc, argv, "46D:p:s:t:n:z:I:b:l:dC:T:Ryv")) != -1) {
+	while ((c = getopt(argc, argv, "46D:p:s:t:n:z:I:b:l:dC:T:RyvM:")) != -1) {
 		switch (c) {
+		case 'M':
+			cfg_devmem = strtoul(optarg, NULL, 0);
+			break;
 		case '4':
 			if (cfg_family != PF_UNSPEC)
 				t_error(1, 0, "Pass one of -4 or -6");
@@ -651,6 +792,13 @@ static void parse_opts(int argc, char **argv)
 		cfg_type = SOCK_DGRAM;
 	else
 		t_error(1, 0, "unknown cfg_test %s", cfg_test);
+
+	if (cfg_devmem && !cfg_defer_taskrun)
+		t_error(0, 1, "devmem requires DEFER_TASKRUN");
+	if (cfg_devmem && cfg_rx)
+		t_error(0, 1, "Rx doesn't support devmem");
+	if (cfg_devmem && (!cfg_zc || !cfg_fixed_buf))
+		t_error(0, 1, "devmem requires zcopy and registered buffers");
 
 	if (!cfg_rx) {
 		if (cfg_nr_reqs > MAX_SUBMIT_NR)
