@@ -42,6 +42,7 @@
 #include <signal.h>
 
 #include "liburing.h"
+#include "helpers.h"
 
 #define PATTERN_SIZE	26
 
@@ -99,23 +100,6 @@ static void sigint_handler(__attribute__((__unused__)) int sig)
 	if (should_stop)
 		_exit(-1);
 	should_stop = true;
-}
-
-/*
- * Implementation of error(3), prints an error message and exits.
- */
-static void t_error(int status, int errnum, const char *format, ...)
-{
-	va_list args;
-	va_start(args, format);
-
-	vfprintf(stderr, format, args);
-	if (errnum)
-		fprintf(stderr, ": %s", strerror(errnum));
-
-	fprintf(stderr, "\n");
-	va_end(args);
-	exit(status);
 }
 
 static void set_cpu_affinity(void)
