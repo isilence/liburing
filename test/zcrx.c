@@ -1205,7 +1205,7 @@ struct area_add_job {
 	int nr;
 };
 
-void *area_add_job_cb(void *arg)
+static void *area_add_job_cb(void *arg)
 {
 	struct area_add_job *job = arg;
 	struct io_uring_zcrx_ifq_reg reg;
