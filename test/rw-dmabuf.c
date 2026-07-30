@@ -17,6 +17,7 @@
 #include "liburing.h"
 #include "helpers.h"
 
+#define FILE_FLAGS (O_DIRECT | O_RDWR)
 #define BUF_NR_BS	1024
 #define MB		(1UL << 20)
 
@@ -157,7 +158,7 @@ static int open_device(struct t_dev *dev, const char *dev_name)
 	unsigned int size;
 	int fd;
 
-	fd = open(dev_name, O_DIRECT | O_RDWR);
+	fd = open(dev_name, FILE_FLAGS);
 	if (fd < 0) {
 		fprintf(stderr, "Can't open device %i\n", fd);
 		return T_EXIT_FAIL;
@@ -516,6 +517,48 @@ static int test_reads(struct io_uring *ring, struct t_dev *dev, struct t_buf *bu
 	return 0;
 }
 
+static int test_no_odirect(struct io_uring *ring, struct t_dev *dev, struct t_buf *buf)
+{
+	struct io_uring_cqe *cqe;
+	struct io_uring_sqe *sqe;
+	int ret, cqe_res;
+
+	ret = fcntl(dev->fd, F_SETFL, FILE_FLAGS & ~O_DIRECT);
+	if (ret != 0)
+		return 0;
+
+	sqe = io_uring_get_sqe(ring);
+	io_uring_prep_read_fixed(sqe, dev->fd, (void *)0, dev->block_size, 0, 0);
+	sqe->user_data = 42;
+
+	ret = io_uring_submit(ring);
+	if (ret <= 0) {
+		fprintf(stderr, "sqe submit failed: %d\n", ret);
+		return -1;
+	}
+
+	ret = io_uring_wait_cqe(ring, &cqe);
+	if (ret < 0) {
+		fprintf(stderr, "wait completion %d\n", ret);
+		return -1;
+	}
+	cqe_res = cqe->res;
+	io_uring_cqe_seen(ring, cqe);
+
+	ret = fcntl(dev->fd, F_SETFL, FILE_FLAGS);
+	if (ret != 0) {
+		fprintf(stderr, "fcntl: Can't restore O_DIRECT\n");
+		return errno;
+	}
+
+	if (cqe_res >= 0) {
+		if (cqe_res != dev->block_size)
+			return -EFAULT;
+		return verify_data(buf, 0, 0, dev->block_size);
+	}
+	return 0;
+}
+
 static int test_device(const char *dev_name, bool defer_taskrun)
 {
 	struct io_uring_rsrc_update2 up;
@@ -604,6 +647,12 @@ static int test_device(const char *dev_name, bool defer_taskrun)
 	ret = test_reads(&ring, &dev, &dmabuf);
 	if (ret) {
 		fprintf(stderr, "test_reads #2 failed %i\n", ret);
+		return ret;
+	}
+
+	ret = test_no_odirect(&ring, &dev, &dmabuf);
+	if (ret) {
+		fprintf(stderr, "test_no_odirect() fails %i\n", ret);
 		return ret;
 	}
 
