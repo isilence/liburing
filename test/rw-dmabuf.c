@@ -17,6 +17,9 @@
 #include "liburing.h"
 #include "helpers.h"
 
+#define BUF_NR_BS	1024
+#define MB		(1UL << 20)
+
 static int udmabuf_devfd;
 static int page_size;
 
@@ -421,6 +424,7 @@ static int test_writes(struct io_uring *ring, struct t_dev *dev, struct t_buf *b
 	struct io_uring_cqe *cqe;
 	struct io_uring_sqe *sqe;
 	const int nr_reqs = 16;
+	unsigned stripe = nr_reqs * dev->block_size;
 	size_t off = 0;
 	int ret;
 
@@ -463,7 +467,7 @@ static int test_writes(struct io_uring *ring, struct t_dev *dev, struct t_buf *b
 			io_uring_cqe_seen(ring, cqe);
 		}
 
-		off += nr_reqs * dev->block_size;
+		off += stripe;
 	}
 
 	return 0;
@@ -471,9 +475,10 @@ static int test_writes(struct io_uring *ring, struct t_dev *dev, struct t_buf *b
 
 static int test_reads(struct io_uring *ring, struct t_dev *dev, struct t_buf *buf)
 {
-	size_t f_offs[] = { 0, 1, 2, 7 };
-	size_t buf_offs[] = { 0, 1, 2, 7 };
-	size_t io_sizes[] = { 1, 2, 3, 15, 7, 16, 32, 31 };
+	size_t bs_per_mb = MB / dev->block_size;
+	size_t f_offs[] = { 0, 1, 2, 7, };
+	size_t buf_offs[] = { 0, 1, 2, 7, };
+	size_t io_sizes[] = { 1, 2, 3, 15, 7, 16, 32, 31, 512, 2 * bs_per_mb };
 	int ret;
 
 	ret = test_read(ring, dev, buf, 0, 0, dev->block_size);
@@ -525,7 +530,10 @@ static int test_device(const char *dev_name, bool defer_taskrun)
 	ret = open_device(&dev, dev_name);
 	if (ret)
 		return ret;
-	dev.size = 1 << 20;
+	max_io_size = BUF_NR_BS * dev.block_size;
+	if (max_io_size < 16 * MB)
+		max_io_size = 16 * MB;
+	dev.size = max_io_size * 2;
 
 	ret = fill_device(&dev, FILL_PATTERN);
 	if (ret) {
@@ -533,7 +541,6 @@ static int test_device(const char *dev_name, bool defer_taskrun)
 		return T_EXIT_FAIL;
 	}
 
-	max_io_size = 128 * dev.block_size;
 	ret = create_udmabuf(&dmabuf, max_io_size);
 	if (ret) {
 		fprintf(stderr, "create_udmabuf failed\n");
