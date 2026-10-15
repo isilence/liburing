@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <assert.h>
+#include <pthread.h>
 
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -671,6 +672,66 @@ static int test_no_odirect(struct io_uring *ring, struct t_dev *dev,
 	return 0;
 }
 
+struct mt_ctx {
+	struct io_uring *ring;
+	struct t_buf *dmabuf;
+	struct t_dev *dev;
+	pthread_barrier_t *barrier;
+	int err;
+};
+
+static void read_cb(struct mt_ctx *ctx)
+{
+	int ret;
+
+	pthread_barrier_wait(ctx->barrier);
+
+	ret = test_parallel_reads(ctx->ring, ctx->dev, ctx->dmabuf);
+	if (ret) {
+		fprintf(stderr, "test_parallel_reads failed %i\n", ret);
+		ctx->err = ret;
+	}
+}
+
+static void *read_pthread_cb(void *data)
+{
+	read_cb(data);
+	return NULL;
+}
+
+static int test_mt_reads(struct io_uring *ring1, struct io_uring *ring2,
+			struct t_buf *dmabuf, struct t_dev *dev)
+{
+	pthread_barrier_t barrier;
+	struct mt_ctx ctx1 = {
+		.dev = dev,
+		.dmabuf = dmabuf,
+		.barrier = &barrier,
+		.ring = ring1,
+	};
+	struct mt_ctx ctx2 = ctx1;
+	pthread_t thread;
+	int ret;
+
+	ctx2.ring = ring2;
+	pthread_barrier_init(&barrier, NULL, 2);
+
+	ret = pthread_create(&thread, NULL, read_pthread_cb, &ctx2);
+	if (ret) {
+		fprintf(stderr, "can't create thread\n");
+		return ret;
+	}
+	read_cb(&ctx1);
+
+	pthread_join(thread, NULL);
+	if (ctx1.err || ctx2.err) {
+		fprintf(stderr, "multi-threaded read failed %i %i\n",
+			ctx1.err, ctx2.err);
+		return ctx1.err ? ctx1.err : ctx2.err;
+	}
+	return 0;
+}
+
 static inline size_t calc_buf_size(size_t block_size)
 {
 	size_t size = block_size * 128;
@@ -680,7 +741,7 @@ static inline size_t calc_buf_size(size_t block_size)
 
 static int test_device(const char *dev_name, bool defer_taskrun, bool clone_buf)
 {
-	struct io_uring ring, ring2, *reg_ring;
+	struct io_uring ring, ring2;
 	struct t_buf dmabuf;
 	struct t_dev dev;
 	int ret;
@@ -711,16 +772,13 @@ static int test_device(const char *dev_name, bool defer_taskrun, bool clone_buf)
 		return T_EXIT_FAIL;
 	}
 
-	if (clone_buf) {
-		ret = create_ring(&ring2, defer_taskrun);
-		if (ret) {
-			fprintf(stderr, "ring setup failed: %d\n", ret);
-			return T_EXIT_FAIL;
-		}
+	ret = create_ring(&ring2, defer_taskrun);
+	if (ret) {
+		fprintf(stderr, "ring setup failed: %d\n", ret);
+		return T_EXIT_FAIL;
 	}
 
-	reg_ring = clone_buf ? &ring2 : &ring;
-	ret = register_dmabuf(reg_ring, &dmabuf, &dev);
+	ret = register_dmabuf(&ring2, &dmabuf, &dev);
 	if (ret) {
 		if (ret == -EINVAL || ret == -EOPNOTSUPP) {
 			fprintf(stderr, "dmabuf read-write not supported by io_uring / device, skip\n");
@@ -736,12 +794,26 @@ static int test_device(const char *dev_name, bool defer_taskrun, bool clone_buf)
 			fprintf(stderr, "clone failed %i\n", ret);
 			return T_EXIT_FAIL;
 		}
+	} else {
+		ret = register_dmabuf(&ring, &dmabuf, &dev);
+		if (ret) {
+			fprintf(stderr, "register_dmabuf failed");
+			return T_EXIT_FAIL;
+		}
 	}
 
 	ret = test_reads(&ring, &dev, &dmabuf);
 	if (ret) {
 		fprintf(stderr, "test_reads #1 failed %i\n", ret);
 		return T_EXIT_FAIL;
+	}
+
+	if (!defer_taskrun) {
+		ret = test_mt_reads(&ring, &ring2, &dmabuf, &dev);
+		if (ret) {
+			fprintf(stderr, "test_mt_reads failed\n");
+			return ret;
+		}
 	}
 
 	ret = test_writes(&ring, &dev, &dmabuf);
@@ -766,8 +838,7 @@ static int test_device(const char *dev_name, bool defer_taskrun, bool clone_buf)
 	}
 
 	io_uring_queue_exit(&ring);
-	if (clone_buf)
-		io_uring_queue_exit(&ring2);
+	io_uring_queue_exit(&ring2);
 
 	ret = test_invalid_registration(&dev, &dmabuf);
 	if (ret) {
