@@ -42,6 +42,9 @@ struct t_dev {
 	int fd;
 	size_t block_size;
 	size_t size;
+
+	bool can_reset;
+	char remove_fname[100];
 };
 
 static void invalidate_dmabuf_map(struct t_buf *buf)
@@ -49,6 +52,39 @@ static void invalidate_dmabuf_map(struct t_buf *buf)
 	assert(buf->invalidate_supported);
 	fprintf(stderr, "dma-buf forced invalidate is not supported\n");
 	exit(1);
+}
+
+static void sysfs_write(const char *fname)
+{
+	int fd, ret;
+
+	fd = open(fname, O_WRONLY);
+	if (fd < 0) {
+		fprintf(stderr, "can't remove device %i\n", errno);
+		exit(1);
+	}
+
+	ret = write(fd, "1", 1);
+	if (ret != 1) {
+		fprintf(stderr, "can't remove device %i\n", errno);
+		exit(1);
+	}
+	close(fd);
+}
+
+static void remove_device(struct t_dev *dev)
+{
+	assert(dev->can_reset);
+	sysfs_write(dev->remove_fname);
+	sleep(1);
+}
+
+static void restore_device(struct t_dev *dev)
+{
+	assert(dev->can_reset);
+	sleep(1);
+	sysfs_write("/sys/bus/pci/rescan");
+	sleep(1);
 }
 
 static void dma_buf_begin_cpu_access(int fd, bool write)
@@ -254,6 +290,29 @@ static int fill_device(struct t_dev *dev, int mode)
 	return 0;
 }
 
+static void parse_device_reset(struct t_dev *dev, const char *fname)
+{
+	const char dev_prefix[] = "/dev/";
+	const char *dev_name;
+	int ret, fd;
+
+	if (strncmp(fname, dev_prefix, sizeof(dev_prefix) - 1) != 0)
+		return;
+
+	dev_name = fname + sizeof(dev_prefix) - 1;
+	ret = snprintf(dev->remove_fname, sizeof(dev->remove_fname),
+			"/sys/block/%s/device/device/remove", dev_name);
+	if (ret < 0 || ret >= sizeof(dev->remove_fname))
+		return;
+
+	fd = open(dev->remove_fname, O_WRONLY);
+	if (fd < 0)
+		return;
+
+	close(fd);
+	dev->can_reset = true;
+}
+
 static int open_device(struct t_dev *dev, const char *dev_name)
 {
 	unsigned int block_size;
@@ -280,11 +339,14 @@ static int open_device(struct t_dev *dev, const char *dev_name)
 		return T_EXIT_SKIP;
 	}
 
+	memset(dev, 0, sizeof(*dev));
 	dev->size = dev_size;
 	if (dev->size > 4 * MB)
 		dev->size = 4 * MB;
 	dev->block_size = block_size;
 	dev->fd = fd;
+
+	parse_device_reset(dev, dev_name);
 	return 0;
 }
 
@@ -411,7 +473,8 @@ static int find_free_idx(__u64 mask)
 }
 
 static int test_parallel_reads(struct io_uring *ring, struct t_dev *dev,
-				struct t_buf *buf, bool invalidate)
+				struct t_buf *buf, bool invalidate,
+				bool allow_fail)
 {
 	const int max_inflight = 16;
 	__u64 mask = ((__u64)1 << max_inflight) - 1;
@@ -463,11 +526,17 @@ static int test_parallel_reads(struct io_uring *ring, struct t_dev *dev,
 			return -1;
 		}
 
+		if (ret < 0) {
+			fprintf(stderr, "wait completion %d\n", ret);
+			return -1;
+		}
+
 		io_uring_for_each_cqe(ring, head, cqe) {
+			bool failed = cqe->res != dev->block_size;
 			unsigned idx;
 			size_t off;
 
-			if (cqe->res != dev->block_size) {
+			if (failed && !allow_fail) {
 				fprintf(stderr, "invalid result %i %i\n", cqe->res,
 					(int)dev->block_size);
 				return -1;
@@ -481,6 +550,9 @@ static int test_parallel_reads(struct io_uring *ring, struct t_dev *dev,
 
 			mask |= idx_to_mask(idx);
 			off = idx * dev->block_size;
+
+			if (failed)
+				return cqe->res < 0 ? cqe->res : -EINVAL;
 
 			ret = verify_data(buf, off, off, dev->block_size);
 			if (ret) {
@@ -634,7 +706,7 @@ static int test_reads(struct io_uring *ring, struct t_dev *dev, struct t_buf *bu
 		}
 	}
 
-	ret = test_parallel_reads(ring, dev, buf, invalidate);
+	ret = test_parallel_reads(ring, dev, buf, invalidate, false);
 	if (ret) {
 		fprintf(stderr, "test_parallel_reads() failed\n");
 		return ret;
@@ -716,7 +788,8 @@ static void read_cb(struct mt_ctx *ctx)
 
 	pthread_barrier_wait(ctx->barrier);
 
-	ret = test_parallel_reads(ctx->ring, ctx->dev, ctx->dmabuf, ctx->invalidate);
+	ret = test_parallel_reads(ctx->ring, ctx->dev, ctx->dmabuf,
+				  ctx->invalidate, false);
 	if (ret) {
 		fprintf(stderr, "test_parallel_reads failed %i\n", ret);
 		ctx->err = ret;
@@ -909,6 +982,191 @@ static int test_device(const char *dev_name, bool defer_taskrun, bool clone_buf)
 	return 0;
 }
 
+static int prep_remove_ctx(const char *dev_name, struct io_uring *ring,
+				struct t_buf *dmabuf, struct t_dev *dev)
+{
+	int ret;
+
+	ret = open_device(dev, dev_name);
+	if (ret)
+		return ret;
+
+	ret = create_udmabuf(dmabuf, calc_buf_size(dev->block_size));
+	if (ret) {
+		fprintf(stderr, "create_udmabuf failed, skip\n");
+		return T_EXIT_SKIP;
+	}
+
+	ret = fill_device(dev, FILL_PATTERN);
+	if (ret) {
+		fprintf(stderr, "fill_device failed %i\n", ret);
+		return T_EXIT_FAIL;
+	}
+
+	ret = create_ring(ring, false);
+	if (ret) {
+		fprintf(stderr, "ring setup failed: %d\n", ret);
+		return T_EXIT_FAIL;
+	}
+
+	return 0;
+}
+
+static int test_remove_before_reg(const char *dev_name)
+{
+	struct io_uring ring;
+	struct t_buf dmabuf;
+	struct t_dev dev;
+	int ret;
+
+	ret = prep_remove_ctx(dev_name, &ring, &dmabuf, &dev);
+	if (ret)
+		return ret;
+
+	remove_device(&dev);
+
+	ret = register_dmabuf(&ring, &dmabuf, &dev);
+	if (!ret) {
+		fprintf(stderr, "registered to kill device\n");
+		return -EFAULT;
+	}
+
+	io_uring_queue_exit(&ring);
+	close_udmabuf(&dmabuf);
+	close_device(&dev);
+	restore_device(&dev);
+	return 0;
+}
+
+static int test_remove_after_reg(const char *dev_name)
+{
+	struct io_uring ring;
+	struct t_buf dmabuf;
+	struct t_dev dev;
+	int ret;
+
+	ret = prep_remove_ctx(dev_name, &ring, &dmabuf, &dev);
+	if (ret)
+		return ret;
+
+	ret = register_dmabuf(&ring, &dmabuf, &dev);
+	if (ret) {
+		fprintf(stderr, "register_dmabuf failed %i\n", ret);
+		return ret;
+	}
+
+	remove_device(&dev);
+
+	ret = test_parallel_reads(&ring, &dev, &dmabuf, false, true);
+	if (!ret) {
+		fprintf(stderr, "test_parallel_reads with removed device %i\n", ret);
+		return -EINVAL;
+	}
+
+	io_uring_queue_exit(&ring);
+	close_udmabuf(&dmabuf);
+	close_device(&dev);
+	restore_device(&dev);
+	return 0;
+}
+
+struct remove_th_data {
+	pthread_barrier_t *barrier;
+	struct t_dev *dev;
+};
+
+static void *remove_pthread_cb(void *arg)
+{
+	struct remove_th_data *data = arg;
+
+	pthread_barrier_wait(data->barrier);
+	remove_device(data->dev);
+	return NULL;
+}
+
+static int test_remove_mid_io(const char *dev_name)
+{
+	pthread_barrier_t barrier;
+	pthread_t thread;
+	struct io_uring ring;
+	struct t_buf dmabuf;
+	struct t_dev dev;
+	struct remove_th_data data = {
+		.dev = &dev,
+		.barrier = &barrier,
+	};
+	int ret;
+
+	ret = prep_remove_ctx(dev_name, &ring, &dmabuf, &dev);
+	if (ret)
+		return ret;
+
+	ret = register_dmabuf(&ring, &dmabuf, &dev);
+	if (ret) {
+		fprintf(stderr, "register_dmabuf failed %i\n", ret);
+		return ret;
+	}
+
+	pthread_barrier_init(&barrier, NULL, 2);
+	ret = pthread_create(&thread, NULL, remove_pthread_cb, &data);
+	if (ret) {
+		fprintf(stderr, "can't create thread\n");
+		return ret;
+	}
+	pthread_barrier_wait(&barrier);
+
+	ret = test_parallel_reads(&ring, &dev, &dmabuf, false, true);
+	if (!ret) {
+		fprintf(stderr, "test_parallel_reads with removed device %i\n", ret);
+		return -EINVAL;
+	}
+
+	pthread_join(thread, NULL);
+	io_uring_queue_exit(&ring);
+	close_udmabuf(&dmabuf);
+	close_device(&dev);
+	restore_device(&dev);
+	return 0;
+}
+
+static int test_dev_removal(const char *dev_name)
+{
+	struct t_dev tmp_dev;
+	bool reset_supported;
+	int ret;
+
+	ret = open_device(&tmp_dev, dev_name);
+	if (ret)
+		return ret;
+	reset_supported = tmp_dev.can_reset;
+	close_device(&tmp_dev);
+
+	if (!reset_supported) {
+		fprintf(stderr, "skip device reset\n");
+		return 0;
+	}
+
+	ret = test_remove_before_reg(dev_name);
+	if (ret) {
+		fprintf(stderr, "test_remove_before_reg failed\n");
+		return ret;
+	}
+
+	ret = test_remove_after_reg(dev_name);
+	if (ret) {
+		fprintf(stderr, "test_remove_after_reg failed\n");
+		return ret;
+	}
+
+	ret = test_remove_mid_io(dev_name);
+	if (ret) {
+		fprintf(stderr, "test_remove_mid_io failed\n");
+		return ret;
+	}
+
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	const char *dev_name = NULL;
@@ -949,6 +1207,12 @@ int main(int argc, char *argv[])
 	ret = test_device(dev_name, true, false);
 	if (ret) {
 		fprintf(stderr, "test_device() DEFER_TASKRUN failed\n");
+		return ret;
+	}
+
+	ret = test_dev_removal(dev_name);
+	if (ret) {
+		fprintf(stderr, "test_dev_removal failed\n");
 		return ret;
 	}
 
