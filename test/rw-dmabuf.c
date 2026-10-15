@@ -678,9 +678,9 @@ static inline size_t calc_buf_size(size_t block_size)
 	return size > 3 * MB ? size : 3 * MB;
 }
 
-static int test_device(const char *dev_name, bool defer_taskrun)
+static int test_device(const char *dev_name, bool defer_taskrun, bool clone_buf)
 {
-	struct io_uring ring;
+	struct io_uring ring, ring2, *reg_ring;
 	struct t_buf dmabuf;
 	struct t_dev dev;
 	int ret;
@@ -711,7 +711,16 @@ static int test_device(const char *dev_name, bool defer_taskrun)
 		return T_EXIT_FAIL;
 	}
 
-	ret = register_dmabuf(&ring, &dmabuf, &dev);
+	if (clone_buf) {
+		ret = create_ring(&ring2, defer_taskrun);
+		if (ret) {
+			fprintf(stderr, "ring setup failed: %d\n", ret);
+			return T_EXIT_FAIL;
+		}
+	}
+
+	reg_ring = clone_buf ? &ring2 : &ring;
+	ret = register_dmabuf(reg_ring, &dmabuf, &dev);
 	if (ret) {
 		if (ret == -EINVAL || ret == -EOPNOTSUPP) {
 			fprintf(stderr, "dmabuf read-write not supported by io_uring / device, skip\n");
@@ -719,6 +728,14 @@ static int test_device(const char *dev_name, bool defer_taskrun)
 		}
 		fprintf(stderr, "register_dmabuf failed");
 		return T_EXIT_FAIL;
+	}
+
+	if (clone_buf) {
+		ret = __io_uring_clone_buffers(&ring, &ring2, IORING_REGISTER_DST_REPLACE);
+		if (ret) {
+			fprintf(stderr, "clone failed %i\n", ret);
+			return T_EXIT_FAIL;
+		}
 	}
 
 	ret = test_reads(&ring, &dev, &dmabuf);
@@ -749,6 +766,8 @@ static int test_device(const char *dev_name, bool defer_taskrun)
 	}
 
 	io_uring_queue_exit(&ring);
+	if (clone_buf)
+		io_uring_queue_exit(&ring2);
 
 	ret = test_invalid_registration(&dev, &dmabuf);
 	if (ret) {
@@ -784,14 +803,21 @@ int main(int argc, char *argv[])
 		return T_EXIT_SKIP;
 	}
 
-	ret = test_device(dev_name, false);
+	ret = test_device(dev_name, false, false);
 	if (ret) {
 		if (ret != T_EXIT_SKIP)
 			fprintf(stderr, "test_device() failed\n");
 		return ret;
 	}
 
-	ret = test_device(dev_name, true);
+	ret = test_device(dev_name, false, true);
+	if (ret) {
+		if (ret != T_EXIT_SKIP)
+			fprintf(stderr, "test_device() cloned failed\n");
+		return ret;
+	}
+
+	ret = test_device(dev_name, true, false);
 	if (ret) {
 		fprintf(stderr, "test_device() DEFER_TASKRUN failed\n");
 		return ret;
