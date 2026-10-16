@@ -35,6 +35,7 @@ struct t_buf {
 	size_t size;
 	int dmabuf_fd;
 	int memfd;
+	bool invalidate_supported;
 };
 
 struct t_dev {
@@ -42,6 +43,13 @@ struct t_dev {
 	size_t block_size;
 	size_t size;
 };
+
+static void invalidate_dmabuf_map(struct t_buf *buf)
+{
+	assert(buf->invalidate_supported);
+	fprintf(stderr, "dma-buf forced invalidate is not supported\n");
+	exit(1);
+}
 
 static void dma_buf_begin_cpu_access(int fd, bool write)
 {
@@ -331,6 +339,7 @@ static int create_udmabuf(struct t_buf *b, size_t size)
 	b->dmabuf_fd = dmabuf_fd;
 	b->memfd = memfd;
 	b->ptr = p;
+	b->invalidate_supported = false;
 	return 0;
 }
 
@@ -401,7 +410,8 @@ static int find_free_idx(__u64 mask)
 	return -1;
 }
 
-static int test_parallel_reads(struct io_uring *ring, struct t_dev *dev, struct t_buf *buf)
+static int test_parallel_reads(struct io_uring *ring, struct t_dev *dev,
+				struct t_buf *buf, bool invalidate)
 {
 	const int max_inflight = 16;
 	__u64 mask = ((__u64)1 << max_inflight) - 1;
@@ -410,6 +420,7 @@ static int test_parallel_reads(struct io_uring *ring, struct t_dev *dev, struct 
 	int nr_left = 1000;
 	int inflight = 0;
 	int i, ret;
+	int loops = 0;
 
 	while (nr_left > 0 || inflight) {
 		int to_submit = max_inflight - inflight;
@@ -442,6 +453,9 @@ static int test_parallel_reads(struct io_uring *ring, struct t_dev *dev, struct 
 			inflight += to_submit;
 			nr_left -= to_submit;
 		}
+
+		if (invalidate && (++loops) % 8 == 0)
+			invalidate_dmabuf_map(buf);
 
 		ret = io_uring_wait_cqe(ring, &cqe);
 		if (ret < 0) {
@@ -483,7 +497,7 @@ static int test_parallel_reads(struct io_uring *ring, struct t_dev *dev, struct 
 }
 
 static int test_read(struct io_uring *ring, struct t_dev *dev, struct t_buf *buf,
-			  size_t f_off, size_t buf_off, size_t size)
+			  size_t f_off, size_t buf_off, size_t size, bool invalidate)
 {
 	struct io_uring_cqe *cqe;
 	struct io_uring_sqe *sqe;
@@ -498,11 +512,19 @@ static int test_read(struct io_uring *ring, struct t_dev *dev, struct t_buf *buf
 		fprintf(stderr, "sqe submit failed: %d\n", ret);
 		return -1;
 	}
+
+	if (invalidate)
+		invalidate_dmabuf_map(buf);
+
 	ret = io_uring_wait_cqe(ring, &cqe);
 	if (ret < 0) {
 		fprintf(stderr, "wait completion %d\n", ret);
 		return -1;
 	}
+
+	if (invalidate)
+		invalidate_dmabuf_map(buf);
+
 	if (cqe->res != size) {
 		fprintf(stderr, "invalid result %i %i\n", cqe->res, (int)size);
 		return -1;
@@ -512,13 +534,15 @@ static int test_read(struct io_uring *ring, struct t_dev *dev, struct t_buf *buf
 	return verify_data(buf, buf_off, f_off, size);
 }
 
-static int test_writes(struct io_uring *ring, struct t_dev *dev, struct t_buf *buf)
+static int test_writes(struct io_uring *ring, struct t_dev *dev,
+			struct t_buf *buf, bool invalidate)
 {
 	struct io_uring_cqe *cqe;
 	struct io_uring_sqe *sqe;
 	const int nr_reqs = 16;
 	unsigned stripe = nr_reqs * dev->block_size;
 	size_t off = 0;
+	int loops = 0;
 	int ret;
 
 	assert(stripe <= dev->size);
@@ -553,6 +577,9 @@ static int test_writes(struct io_uring *ring, struct t_dev *dev, struct t_buf *b
 			return -1;
 		}
 
+		if (invalidate && (++loops) % 16 == 0)
+			invalidate_dmabuf_map(buf);
+
 		for (int i = 0; i < nr_reqs; i++) {
 			ret = io_uring_wait_cqe(ring, &cqe);
 			if (ret < 0) {
@@ -572,7 +599,8 @@ static int test_writes(struct io_uring *ring, struct t_dev *dev, struct t_buf *b
 	return 0;
 }
 
-static int test_reads(struct io_uring *ring, struct t_dev *dev, struct t_buf *buf)
+static int test_reads(struct io_uring *ring, struct t_dev *dev, struct t_buf *buf,
+			bool invalidate)
 {
 	size_t bs_per_mb = MB / dev->block_size;
 	size_t f_offs[] = { 0, 1, 2, 7, };
@@ -594,18 +622,19 @@ static int test_reads(struct io_uring *ring, struct t_dev *dev, struct t_buf *bu
 					continue;
 
 				iteration++;
-				ret = test_read(ring, dev, buf, f_off, buf_off, size);
+				ret = test_read(ring, dev, buf, f_off, buf_off, size, invalidate);
 				if (ret) {
-					fprintf(stderr, "test_read() failed ret=%i, foff=%li, off=%li, io=%li, iter=%i\n",
+					fprintf(stderr, "test_read() failed ret=%i, foff=%li, off=%li, "
+						"io=%li, iter=%i, invalidate=%i\n",
 						ret, (long)f_off, (long)buf_off,
-						(long)size, iteration);
+						(long)size, iteration, invalidate);
 					return ret;
 				}
 			}
 		}
 	}
 
-	ret = test_parallel_reads(ring, dev, buf);
+	ret = test_parallel_reads(ring, dev, buf, invalidate);
 	if (ret) {
 		fprintf(stderr, "test_parallel_reads() failed\n");
 		return ret;
@@ -678,6 +707,7 @@ struct mt_ctx {
 	struct t_dev *dev;
 	pthread_barrier_t *barrier;
 	int err;
+	bool invalidate;
 };
 
 static void read_cb(struct mt_ctx *ctx)
@@ -686,7 +716,7 @@ static void read_cb(struct mt_ctx *ctx)
 
 	pthread_barrier_wait(ctx->barrier);
 
-	ret = test_parallel_reads(ctx->ring, ctx->dev, ctx->dmabuf);
+	ret = test_parallel_reads(ctx->ring, ctx->dev, ctx->dmabuf, ctx->invalidate);
 	if (ret) {
 		fprintf(stderr, "test_parallel_reads failed %i\n", ret);
 		ctx->err = ret;
@@ -700,7 +730,8 @@ static void *read_pthread_cb(void *data)
 }
 
 static int test_mt_reads(struct io_uring *ring1, struct io_uring *ring2,
-			struct t_buf *dmabuf, struct t_dev *dev)
+			struct t_buf *dmabuf, struct t_dev *dev,
+			bool invalidate)
 {
 	pthread_barrier_t barrier;
 	struct mt_ctx ctx1 = {
@@ -708,6 +739,7 @@ static int test_mt_reads(struct io_uring *ring1, struct io_uring *ring2,
 		.dmabuf = dmabuf,
 		.barrier = &barrier,
 		.ring = ring1,
+		.invalidate = invalidate,
 	};
 	struct mt_ctx ctx2 = ctx1;
 	pthread_t thread;
@@ -802,21 +834,21 @@ static int test_device(const char *dev_name, bool defer_taskrun, bool clone_buf)
 		}
 	}
 
-	ret = test_reads(&ring, &dev, &dmabuf);
+	ret = test_reads(&ring, &dev, &dmabuf, false);
 	if (ret) {
 		fprintf(stderr, "test_reads #1 failed %i\n", ret);
 		return T_EXIT_FAIL;
 	}
 
 	if (!defer_taskrun) {
-		ret = test_mt_reads(&ring, &ring2, &dmabuf, &dev);
+		ret = test_mt_reads(&ring, &ring2, &dmabuf, &dev, false);
 		if (ret) {
 			fprintf(stderr, "test_mt_reads failed\n");
 			return ret;
 		}
 	}
 
-	ret = test_writes(&ring, &dev, &dmabuf);
+	ret = test_writes(&ring, &dev, &dmabuf, false);
 	if (ret) {
 		fprintf(stderr, "test_writes failed %i\n", ret);
 		return T_EXIT_FAIL;
@@ -825,10 +857,36 @@ static int test_device(const char *dev_name, bool defer_taskrun, bool clone_buf)
 	if (ret)
 		return T_EXIT_FAIL;
 
-	ret = test_reads(&ring, &dev, &dmabuf);
+	ret = test_reads(&ring, &dev, &dmabuf, false);
 	if (ret) {
 		fprintf(stderr, "test_reads #2 failed %i\n", ret);
 		return T_EXIT_FAIL;
+	}
+
+	/* filter out defer_taskrun just to reduce runtime */
+	if (dmabuf.invalidate_supported && !defer_taskrun) {
+		ret = test_reads(&ring, &dev, &dmabuf, true);
+		if (ret) {
+			fprintf(stderr, "test_reads #1 failed  (invalidate) %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+
+		if (!defer_taskrun) {
+			ret = test_mt_reads(&ring, &ring2, &dmabuf, &dev, true);
+			if (ret) {
+				fprintf(stderr, "test_mt_reads (invalidate) failed\n");
+				return ret;
+			}
+		}
+
+		ret = test_writes(&ring, &dev, &dmabuf, true);
+		if (ret) {
+			fprintf(stderr, "test_writes failed (invalidate) %i\n", ret);
+			return T_EXIT_FAIL;
+		}
+		ret = read_verify(&dev);
+		if (ret)
+			return T_EXIT_FAIL;
 	}
 
 	ret = test_no_odirect(&ring, &dev, &dmabuf);
